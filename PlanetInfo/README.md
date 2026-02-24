@@ -1,37 +1,34 @@
-# PlanetInfo
+# Weathering 宇宙信息筛选器（Python）
 
-基于项目源码（`MapOfGalaxyDefaultTile` / `MapOfStarSystemDefaultTile` / `MapOfPlanet` / `GameEntry` / `HashUtility`）复刻的宇宙检索逻辑。
+该工具严格按仓库内 C# 源码复刻宇宙生成逻辑，生成完整树状结构：
 
-## 功能
+- 宇宙 -> 星系（MapOfGalaxy）
+- 星系 -> 恒星系（MapOfStarSystem）
+- 恒星系 -> 星球（MapOfPlanet，可登陆行星）
 
-- 解析 `Weathering.MapOfPlanet#=...` 地图坐标。
-- 按游戏原逻辑计算：
-  - 恒星颜色
-  - 行星类型
-  - 昼夜周期
-  - 四季周期（年）
-  - 月相周期（月）
-  - 年内月相数量（固定 12）
-  - 行星大小
-  - 矿物稀疏度
-- 支持同一恒星系内行星扫描和排序（`planets_in_star_system` / `sort_planets`）。
+并提供类似“注册表编辑器”的左右双栏 UI：
 
-## 使用
+- 左栏：可折叠的父子层级树（星系 / 恒星系 / 星球）
+- 右栏：当前节点详细信息（可查询、筛选、排序）
+- 支持导出选中星球的贴图预览（使用游戏资源目录中的行星 Base 贴图）
+
+## 运行
 
 ```bash
-python3 PlanetInfo/planet_info.py
+python3 PlanetInfo/universe_browser.py --verify
 ```
 
-会打印三个示例行星的信息（按行星大小排序）。
+- `--verify`：校验题目给定的三个坐标是否与游戏属性一致。
+- `--no-ui`：仅构建数据，不启动窗口。
+- `--dump-json <path>`：导出完整宇宙数据。
 
-## 作为模块使用
+例如：
 
-```python
-from PlanetInfo.planet_info import compute_planet_record, planets_in_star_system, sort_planets
-
-r = compute_planet_record("Weathering.MapOfPlanet#=1,4=14,93=24,31")
-print(r)
-
-all_planets = planets_in_star_system((1, 4), (14, 93))
-ranked = sort_planets(all_planets, by="mineral_density", reverse=True)
+```bash
+python3 PlanetInfo/universe_browser.py --verify --no-ui --dump-json PlanetInfo/universe.json
 ```
+
+## 说明
+
+- 本工具不修改游戏工程代码，独立放在 `PlanetInfo/` 下。
+- UI 使用 `tkinter`，预览导出需要 `Pillow`（仅导出功能依赖）。
