@@ -93,8 +93,6 @@ class PlanetRecord:
 
 
 def parse_map_key(map_key: str) -> Tuple[Tuple[int, int], Tuple[int, int], Tuple[int, int]]:
-    if "#" not in map_key:
-        raise ValueError(map_key)
     _, index = map_key.split("#", 1)
     coords = [p for p in index.split("=") if p]
     out: List[Tuple[int, int]] = []
