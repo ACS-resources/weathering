@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import inspect
 import threading
 import time
 from collections import Counter, defaultdict
@@ -942,6 +943,19 @@ class WindowApi:
 def create_window_compat(webview_module, *args, **kwargs):
     """兼容不同 pywebview 版本的 create_window 参数。"""
     options = dict(kwargs)
+
+    # 先基于函数签名过滤（如果当前 pywebview 暴露了可检查签名）
+    try:
+        signature = inspect.signature(webview_module.create_window)
+        supported = set(signature.parameters.keys())
+        for key in list(options.keys()):
+            if key not in supported:
+                print(f"[PlanetInfo] 当前 pywebview 签名不包含参数 '{key}'，已自动降级兼容")
+                options.pop(key)
+    except Exception:
+        # 某些实现无法反射签名，继续走异常兜底重试逻辑
+        pass
+
     while True:
         try:
             return webview_module.create_window(*args, **options)
