@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import inspect
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -226,6 +228,89 @@ def compute_planet_record(planet_map_key: str) -> PlanetRecord:
     )
 
 
+def compute_planet_record_fast(
+    gx: int,
+    gy: int,
+    sx: int,
+    sy: int,
+    px: int,
+    py: int,
+    star_type: str,
+    tile_hash: int,
+) -> PlanetRecord:
+    """基于已知坐标与 tile_hash 快速构建 PlanetRecord，避免重复解析 map_key。"""
+    map_key = build_map_key("MapOfPlanet", [(gx, gy), (sx, sy), (px, py)])
+    hashcode = HashUtility.hash_uint(tile_hash)
+
+    hashcode, v = HashUtility.hashed_ref(hashcode)
+    if v % 50 != 0:
+        raise ValueError("not playable terrestrial planet")
+    hashcode, v = HashUtility.hashed_ref(hashcode)
+    if v % 2 != 0:
+        raise ValueError("not playable terrestrial planet")
+    hashcode, v = HashUtility.hashed_ref(hashcode)
+    if v % 40 == 0:
+        celestial = "PlanetGaia"
+    else:
+        hashcode, v = HashUtility.hashed_ref(hashcode)
+        if v % 40 == 0:
+            celestial = "PlanetSuperDimensional"
+        else:
+            hashcode, v = HashUtility.hashed_ref(hashcode)
+            if v % 10 == 0:
+                celestial = "GasGiant"
+            else:
+                hashcode, v = HashUtility.hashed_ref(hashcode)
+                if v % 9 == 0:
+                    celestial = "GasGiantRinged"
+                else:
+                    hashcode, v = HashUtility.hashed_ref(hashcode)
+                    if v % 3 == 0:
+                        celestial = "PlanetContinental"
+                    else:
+                        hashcode, v = HashUtility.hashed_ref(hashcode)
+                        if v % 2 == 0:
+                            celestial = "PlanetMolten"
+                        else:
+                            hashcode, v = HashUtility.hashed_ref(hashcode)
+                            if v % 4 == 0:
+                                celestial = "PlanetBarren"
+                            else:
+                                hashcode, v = HashUtility.hashed_ref(hashcode)
+                                if v % 3 == 0:
+                                    celestial = "PlanetArid"
+                                else:
+                                    hashcode, v = HashUtility.hashed_ref(hashcode)
+                                    celestial = "PlanetFrozen" if v % 2 == 0 else "PlanetOcean"
+
+    if celestial not in PLANET_TYPES:
+        raise ValueError("not playable terrestrial planet")
+
+    again = HashUtility.hash_uint(HashUtility.hash_uint(tile_hash))
+    slowed = 1 + abs(csharp_mod(csharp_int32(again), 7))
+    planet_hash = HashUtility.hash_string(map_key)
+    self_hash = HashUtility.hash_string(slice_self_map_key_index(map_key))
+    days_per_month = 2 + (planet_hash % 15)
+
+    return PlanetRecord(
+        map_key=map_key,
+        galaxy_x=gx,
+        galaxy_y=gy,
+        star_system_x=sx,
+        star_system_y=sy,
+        planet_x=px,
+        planet_y=py,
+        star_type=star_type,
+        planet_type=PLANET_TYPES[celestial],
+        seconds_for_a_day=(60 * 8) // (1 + slowed),
+        days_for_a_month=days_per_month,
+        days_for_a_year=MONTH_FOR_A_YEAR * days_per_month,
+        month_for_a_year=MONTH_FOR_A_YEAR,
+        planet_size=50 + (self_hash % 100),
+        mineral_density=3 + (HashUtility.add_salt(self_hash, 2641779086) % 27),
+    )
+
+
 def verify_samples() -> None:
     samples = {
         "Weathering.MapOfPlanet#=1,4=14,93=24,31": (160, 60, 5, 12, 142, 5, "类地行星", "橙色恒星"),
@@ -251,22 +336,54 @@ def verify_samples() -> None:
 class UniverseService:
     def __init__(self) -> None:
         self.preloaded = False
+        self.preloading = False
         self.preload_seconds = 0.0
         self.planets_by_key: Dict[str, PlanetRecord] = {}
         self.galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
         self.systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
+        self._preload_lock = threading.Lock()
+        self._preload_thread: Optional[threading.Thread] = None
+        self._preload_rows_done = 0
+        self._preload_rows_total = UNIVERSE_SIZE
 
-    def preload_all(self) -> None:
+    def ensure_preload_started(self) -> None:
+        with self._preload_lock:
+            if self.preloaded or self.preloading:
+                return
+            self.preloading = True
+            self._preload_thread = threading.Thread(target=self.preload_all, daemon=True)
+            self._preload_thread.start()
+
+    def preload_status(self) -> Dict[str, object]:
+        progress = min(100, int((self._preload_rows_done / max(1, self._preload_rows_total)) * 100))
         if self.preloaded:
-            return
-        start = time.time()
+            progress = 100
+        return {
+            "ready": self.preloaded,
+            "preloading": self.preloading,
+            "progress_percent": progress,
+            "rows_done": self._preload_rows_done,
+            "rows_total": self._preload_rows_total,
+            "galaxy_count": len(self.galaxies),
+            "system_count": len(self.systems),
+            "planet_count": len(self.planets_by_key),
+            "preload_seconds": round(self.preload_seconds, 2),
+        }
 
-        for gy in range(UNIVERSE_SIZE):
+    @staticmethod
+    def _scan_galaxy_rows(
+        gy_start: int, gy_end: int
+    ) -> Tuple[int, Dict[Tuple[int, int], Dict[str, object]], Dict[Tuple[int, int, int, int], Dict[str, object]], Dict[str, PlanetRecord]]:
+        chunk_galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
+        chunk_systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
+        chunk_planets: Dict[str, PlanetRecord] = {}
+
+        for gy in range(gy_start, gy_end):
             for gx in range(UNIVERSE_SIZE):
                 if not is_galaxy((gx, gy)):
                     continue
                 gkey = (gx, gy)
-                self.galaxies[gkey] = {
+                chunk_galaxies[gkey] = {
                     "x": gx,
                     "y": gy,
                     "system_keys": [],
@@ -282,10 +399,10 @@ class UniverseService:
                         star_type = calculate_star_type(ss_map_key)
 
                         skey = (gx, gy, sx, sy)
-                        self.galaxies[gkey]["system_keys"].append(skey)
-                        self.galaxies[gkey]["star_type_counter"][star_type] += 1
+                        chunk_galaxies[gkey]["system_keys"].append(skey)
+                        chunk_galaxies[gkey]["star_type_counter"][star_type] += 1
 
-                        self.systems[skey] = {
+                        chunk_systems[skey] = {
                             "gx": gx,
                             "gy": gy,
                             "sx": sx,
@@ -296,8 +413,8 @@ class UniverseService:
                             "planet_type_counter": Counter(),
                         }
 
-                        ss_hash_i = csharp_int32(HashUtility.hash_string(build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])))
-                        main_star, second_star = _star_positions(build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)]))
+                        ss_hash_i = csharp_int32(HashUtility.hash_string(ss_map_key))
+                        main_star, second_star = _star_positions(ss_map_key)
 
                         for py in range(STAR_SYSTEM_SIZE):
                             for px in range(STAR_SYSTEM_SIZE):
@@ -314,19 +431,66 @@ class UniverseService:
                                 if h % 2 != 0:
                                     continue
 
-                                map_key = build_map_key("MapOfPlanet", [(gx, gy), (sx, sy), (px, py)])
                                 try:
-                                    p = compute_planet_record(map_key)
+                                    p = compute_planet_record_fast(gx, gy, sx, sy, px, py, star_type, tile_hash)
                                 except ValueError:
                                     continue
-                                self.planets_by_key[p.map_key] = p
-                                self.systems[skey]["planet_keys"].append(p.map_key)
-                                self.systems[skey]["planet_count"] += 1
-                                self.systems[skey]["planet_type_counter"][p.planet_type] += 1
-                                self.galaxies[gkey]["planet_count"] += 1
+                                chunk_planets[p.map_key] = p
+                                chunk_systems[skey]["planet_keys"].append(p.map_key)
+                                chunk_systems[skey]["planet_count"] += 1
+                                chunk_systems[skey]["planet_type_counter"][p.planet_type] += 1
+                                chunk_galaxies[gkey]["planet_count"] += 1
+
+        return gy_end - gy_start, chunk_galaxies, chunk_systems, chunk_planets
+
+    def preload_all(self) -> None:
+        wait_thread: Optional[threading.Thread] = None
+        with self._preload_lock:
+            if self.preloaded:
+                return
+            if self.preloading and self._preload_thread is not None and self._preload_thread is not threading.current_thread():
+                wait_thread = self._preload_thread
+            else:
+                self.preloading = True
+                self._preload_thread = threading.current_thread()
+
+        if wait_thread is not None:
+            wait_thread.join()
+            return
+
+        start = time.time()
+        self._preload_rows_done = 0
+        print("[PlanetInfo] 开始预加载宇宙数据...")
+
+        cpu = os.cpu_count() or 4
+        workers = max(2, min(8, cpu))
+        chunk_size = 2
+        row_ranges = [(gy, min(UNIVERSE_SIZE, gy + chunk_size)) for gy in range(0, UNIVERSE_SIZE, chunk_size)]
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {executor.submit(self._scan_galaxy_rows, gy0, gy1): (gy0, gy1) for gy0, gy1 in row_ranges}
+            for future in as_completed(future_map):
+                rows_done, row_galaxies, row_systems, row_planets = future.result()
+                self.galaxies.update(row_galaxies)
+                self.systems.update(row_systems)
+                self.planets_by_key.update(row_planets)
+                self._preload_rows_done += rows_done
+
+                if self._preload_rows_done % 10 == 0 or self._preload_rows_done >= UNIVERSE_SIZE:
+                    pct = int(self._preload_rows_done * 100 / UNIVERSE_SIZE)
+                    print(
+                        f"[PlanetInfo] 预加载进度: {self._preload_rows_done}/{UNIVERSE_SIZE} ({pct}%), "
+                        f"星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}"
+                    )
 
         self.preloaded = True
+        self.preloading = False
+        self._preload_thread = None
         self.preload_seconds = time.time() - start
+        print(
+            f"[PlanetInfo] 预加载完成: 星系={len(self.galaxies)}, 恒星系={len(self.systems)}, "
+            f"行星={len(self.planets_by_key)}, 耗时={self.preload_seconds:.2f}s"
+        )
 
     @staticmethod
     def _sort_rows(rows: List[Dict[str, object]], key: str, desc: bool) -> List[Dict[str, object]]:
@@ -334,7 +498,11 @@ class UniverseService:
             return rows
         if key not in rows[0]:
             key = "x"
-        return sorted(rows, key=lambda r: r[key], reverse=desc)
+        if key == "x" and "y" in rows[0]:
+            return sorted(rows, key=lambda r: (r["x"], r["y"]), reverse=desc)
+        if key == "y" and "x" in rows[0]:
+            return sorted(rows, key=lambda r: (r["y"], r["x"]), reverse=desc)
+        return sorted(rows, key=lambda r: (r[key], r.get("x", 0), r.get("y", 0)), reverse=desc)
 
     def list_galaxies(self, sort_key: str = "x", desc: bool = False, search: str = "") -> List[Dict[str, object]]:
         self.preload_all()
@@ -425,49 +593,62 @@ HTML = """<!doctype html>
   <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css\">
   <script type=\"module\" src=\"https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js\"></script>
   <style>
-    :root { --bg:#0b1220; --panel:#111827; --line:#334155; --txt:#e2e8f0; --sub:#93c5fd; }
-    body { margin:0; background:var(--bg); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
-    .app { display:grid; grid-template-columns: 420px 1fr; height:100vh; }
-    .left { border-right:1px solid var(--line); overflow:auto; padding:10px; background:#0f172a; }
-    .right { overflow:auto; padding:10px; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:10px; }
-    .title { color:var(--sub); margin:0 0 8px; font-size:16px; font-weight:700; }
-    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .node { padding:8px 10px; border-radius:8px; border:1px solid #263244; margin-bottom:6px; cursor:pointer; }
-    .node:hover { background:#1e293b; }
-    .hint { color:#93a4bb; font-size:12px; }
-    .kv { margin:6px 0; }
-    .pill { display:inline-block; margin:3px 6px 3px 0; padding:4px 8px; border:1px solid var(--line); border-radius:999px; background:#1e293b; }
-    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#162338; color:var(--txt); padding:6px 8px; cursor:pointer; }
-    .btn-icon:hover { background:#26364d; }
+    :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(circle at 10% 10%, #15284c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; overflow:hidden; }
+    .app { display:grid; grid-template-columns: 420px 1fr; height:100vh; padding:12px; gap:12px; }
+    .app.hidden { display:none; }
+    .panel { overflow:auto; padding:14px; background:rgba(15,26,48,.9); border:1px solid var(--line); border-radius:14px; }
+    .title { color:var(--sub); margin:0 0 12px; font-size:16px; font-weight:700; letter-spacing:.04em; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+    .node { padding:11px 12px; border-radius:10px; border:1px solid #2a4068; margin-bottom:8px; cursor:pointer; background:#0e1930; transition:.18s ease; }
+    .node:hover { background:#142548; border-color:#3f6bad; transform:translateY(-1px); }
+    .hint { color:#9bb6dd; font-size:12px; }
+    .kv { margin:9px 0; line-height:1.5; }
+    .pill { display:inline-block; margin:4px 6px 4px 0; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#132748; }
+    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#132746; color:var(--txt); padding:7px 10px; cursor:pointer; }
+    .btn-icon:hover { background:#1b3763; }
+    .loading-overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#020617,#071025); z-index:99; }
+    .loading-card { width:min(560px,88vw); background:rgba(15,26,48,.92); border:1px solid var(--line); border-radius:14px; padding:22px; }
+    .loading-title { margin:0 0 8px; color:var(--sub); font-size:20px; }
+    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#0b1326; }
+    .bar { height:100%; width:4%; background:linear-gradient(90deg,#3b82f6,#93c5fd); }
   </style>
 </head>
 <body>
-<div class=\"app\">
-  <aside class=\"left\">
-    <div class=\"card\">
+<div id=\"loadingOverlay\" class=\"loading-overlay\">
+  <div class=\"loading-card\">
+    <h2 class=\"loading-title\">加载中</h2>
+    <div id=\"loadingStats\" class=\"hint\" style=\"margin-bottom:8px\">正在构建宇宙索引...</div>
+    <div class=\"progress\"><div id=\"loadingBar\" class=\"bar\"></div></div>
+  </div>
+</div>
+
+<div id=\"app\" class=\"app hidden\">
+  <aside class=\"panel\">
+    <div>
       <h3 class=\"title\">导航</h3>
-      <div class=\"row\" style=\"margin-bottom:8px\">
+      <div class=\"row\">
         <button id=\"backBtn\" class=\"btn-icon\"><i class=\"bi bi-arrow-left-circle\"></i> 返回</button>
         <span id=\"breadcrumb\" class=\"hint\">宇宙 / 星系列表</span>
       </div>
 
-      <div id=\"searchBlock\" class=\"row\" style=\"margin-bottom:8px\">
-        <fluent-text-field id=\"coordSearch\" placeholder=\"输入 x,y 直接进入\" style=\"width:220px\"></fluent-text-field>
+      <div id=\"searchBlock\" class=\"row\">
+        <fluent-text-field id=\"coordSearch\" placeholder=\"x,y\" style=\"width:160px\"></fluent-text-field>
         <button id=\"searchBtn\" class=\"btn-icon\"><i class=\"bi bi-search\"></i></button>
       </div>
 
-      <div class=\"row\" style=\"margin-bottom:8px\">
+      <div class=\"row\">
         <fluent-select id=\"sortKey\" style=\"width:180px\"></fluent-select>
-        <button id=\"sortDirBtn\" class=\"btn-icon\" title=\"切换升降序\"><i id=\"sortDirIcon\" class=\"bi bi-sort-down\"></i></button>
+        <button id=\"sortDirBtn\" class=\"btn-icon\" title=\"切换升降序\"><i id=\"sortDirIcon\" class=\"bi bi-sort-down-alt\"></i></button>
       </div>
 
       <div id=\"list\"></div>
     </div>
   </aside>
 
-  <main class=\"right\">
-    <div class=\"card\">
+  <main class=\"panel\">
+    <div>
       <h3 class=\"title\">具体信息</h3>
       <div id=\"info\" class=\"hint\">启动中：正在加载全部星球数据...</div>
     </div>
@@ -476,6 +657,10 @@ HTML = """<!doctype html>
 
 <script>
 const API = '/api';
+const appRoot = document.getElementById('app');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingStats = document.getElementById('loadingStats');
+const loadingBar = document.getElementById('loadingBar');
 const info = document.getElementById('info');
 const list = document.getElementById('list');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -505,6 +690,15 @@ function setSortOptions(level){
   }
   if (!keys.includes(state.sort_key)) state.sort_key = keys[0];
   sortKey.value = state.sort_key;
+}
+
+function parseCoordInput(raw){
+  const parts = raw.split(',').map(v => v.trim());
+  if (parts.length !== 2) return null;
+  const x = Number(parts[0]);
+  const y = Number(parts[1]);
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
+  return {x, y};
 }
 
 function renderInfo(data){
@@ -608,10 +802,75 @@ async function loadList(search=''){
   }
 }
 
-async function init() {
-  const app = await getJson(`${API}/app_info`);
-  info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
+async function jumpBySearch(){
+  const search = document.getElementById('coordSearch').value.trim();
+  if (!search) {
+    await loadList('');
+    return;
+  }
+  const c = parseCoordInput(search);
+  if (!c) {
+    list.innerHTML = '<div class="hint">请输入合法坐标，例如 12,34</div>';
+    return;
+  }
 
+  if (state.level === 'galaxy') {
+    const r = await getJson(`${API}/galaxies?search=${encodeURIComponent(search)}`);
+    if (!r.length) {
+      list.innerHTML = '<div class="hint">未找到该星系</div>';
+      return;
+    }
+    state.level = 'system';
+    state.gx = c.x; state.gy = c.y;
+    state.sort_key = 'x';
+    state.desc = false;
+    sortDirIcon.className = 'bi bi-sort-down-alt';
+    setSortOptions('system');
+    renderInfo(await getJson(`${API}/galaxy_info?gx=${c.x}&gy=${c.y}`));
+    await loadList('');
+    return;
+  }
+
+  if (state.level === 'system') {
+    const r = await getJson(`${API}/systems?gx=${state.gx}&gy=${state.gy}&search=${encodeURIComponent(search)}`);
+    if (!r.length) {
+      list.innerHTML = '<div class="hint">未找到该恒星系</div>';
+      return;
+    }
+    state.level = 'planet';
+    state.sx = c.x; state.sy = c.y;
+    state.sort_key = 'planet_x';
+    state.desc = false;
+    sortDirIcon.className = 'bi bi-sort-down-alt';
+    setSortOptions('planet');
+    renderInfo(await getJson(`${API}/system_info?gx=${state.gx}&gy=${state.gy}&sx=${c.x}&sy=${c.y}`));
+    await loadList('');
+    return;
+  }
+
+  await loadList('');
+}
+
+async function init() {
+  const loadingStart = Date.now();
+  const MIN_LOADING_MS = 1500;
+  let sawPreloading = false;
+  while (true) {
+    const status = await getJson(`${API}/preload_status`);
+    const pct = status.progress_percent || 0;
+    if (status.preloading || !status.ready) sawPreloading = true;
+    loadingStats.textContent = `进度 ${pct}% (${status.rows_done}/${status.rows_total}) · 星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
+    loadingBar.style.width = `${Math.max(4, pct)}%`;
+    const elapsed = Date.now() - loadingStart;
+    const canEnter = status.ready && elapsed >= MIN_LOADING_MS && (sawPreloading || pct >= 100);
+    if (canEnter) {
+      loadingOverlay.style.display = 'none';
+      appRoot.classList.remove('hidden');
+      info.innerHTML = `<b>已加载</b><br>星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 300));
+  }
   setSortOptions('galaxy');
   await loadList('');
 }
@@ -623,13 +882,19 @@ document.getElementById('sortKey').onchange = async (e)=>{
 
 document.getElementById('sortDirBtn').onclick = async ()=>{
   state.desc = !state.desc;
-  sortDirIcon.className = state.desc ? 'bi bi-sort-down' : 'bi bi-sort-up';
+  sortDirIcon.className = state.desc ? 'bi bi-sort-up-alt' : 'bi bi-sort-down-alt';
   await loadList(document.getElementById('coordSearch').value.trim());
 };
 
 document.getElementById('searchBtn').onclick = async ()=>{
-  await loadList(document.getElementById('coordSearch').value.trim());
+  await jumpBySearch();
 };
+
+document.getElementById('coordSearch').addEventListener('keydown', async (event)=>{
+  if (event.key === 'Enter') {
+    await jumpBySearch();
+  }
+});
 
 document.getElementById('backBtn').onclick = async ()=>{
   if (state.level === 'planet') {
@@ -646,7 +911,7 @@ document.getElementById('backBtn').onclick = async ()=>{
     info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
   }
   state.desc = false;
-  sortDirIcon.className = 'bi bi-sort-up';
+  sortDirIcon.className = 'bi bi-sort-down-alt';
   await loadList('');
 };
 
@@ -683,7 +948,12 @@ class AppHTTP(BaseHTTPRequestHandler):
 
         try:
             if path == "/":
+                self.service.ensure_preload_started()
                 self._html(HTML)
+                return
+            if path == "/api/preload_status":
+                self.service.ensure_preload_started()
+                self._json(self.service.preload_status())
                 return
             if path == "/api/app_info":
                 self._json(self.service.app_info())
@@ -736,11 +1006,41 @@ class AppHTTP(BaseHTTPRequestHandler):
 
 def run_server(port: int = 8765) -> ThreadingHTTPServer:
     verify_samples()
-    AppHTTP.service.preload_all()
     server = ThreadingHTTPServer(("127.0.0.1", port), AppHTTP)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     return server
+
+
+def create_window_compat(webview_module, *args, **kwargs):
+    """兼容不同 pywebview 版本的 create_window 参数。"""
+    options = dict(kwargs)
+
+    # 先基于函数签名过滤（如果当前 pywebview 暴露了可检查签名）
+    try:
+        signature = inspect.signature(webview_module.create_window)
+        supported = set(signature.parameters.keys())
+        for key in list(options.keys()):
+            if key not in supported:
+                print(f"[PlanetInfo] 当前 pywebview 签名不包含参数 '{key}'，已自动降级兼容")
+                options.pop(key)
+    except Exception:
+        # 某些实现无法反射签名，继续走异常兜底重试逻辑
+        pass
+
+    while True:
+        try:
+            return webview_module.create_window(*args, **options)
+        except TypeError as exc:
+            msg = str(exc)
+            token = "unexpected keyword argument "
+            if token not in msg:
+                raise
+            bad_key = msg.split(token, 1)[1].strip().strip("'\"")
+            if bad_key not in options:
+                raise
+            print(f"[PlanetInfo] 当前 pywebview 不支持参数 '{bad_key}'，已自动降级兼容")
+            options.pop(bad_key)
 
 
 def run_app() -> None:
@@ -756,8 +1056,17 @@ def run_app() -> None:
             server.shutdown()
         return
 
+    icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Assets", "Sprites", "Sprites", "icon.png"))
     try:
-        webview.create_window("Weathering Universe Explorer", "http://127.0.0.1:8765", width=1500, height=920)
+        create_window_compat(
+            webview,
+            "Weathering PlanetInfo",
+            "http://127.0.0.1:8765",
+            width=1040,
+            height=700,
+            resizable=False,
+            icon=icon_path,
+        )
         webview.start(gui="edgechromium", debug=False)
     finally:
         server.shutdown()
@@ -766,7 +1075,9 @@ def run_app() -> None:
 if __name__ == "__main__":
     if not os.environ.get("DISPLAY") and os.name != "nt":
         verify_samples()
-        AppHTTP.service.preload_all()
+        AppHTTP.service.ensure_preload_started()
+        while not AppHTTP.service.preloaded:
+            time.sleep(0.2)
         print("验证通过（当前无图形环境，已预加载全部数据，跳过 Edge WebView 启动）")
     else:
         run_app()
