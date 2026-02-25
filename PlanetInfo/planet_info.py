@@ -583,26 +583,105 @@ class UniverseService:
             "preload_seconds": round(self.preload_seconds, 2),
         }
 
+    def list_system_rankings(
+        self,
+        sort_key: str = "overall_area",
+        desc: Optional[bool] = None,
+        page: int = 1,
+        page_size: int = 25,
+    ) -> Dict[str, object]:
+        self.preload_all()
+        rows: List[Dict[str, object]] = []
+
+        for s in self.systems.values():
+            planets = [self.planets_by_key[k] for k in s["planet_keys"]]
+            if not planets:
+                continue
+
+            overall_area = sum(p.planet_size**2 for p in planets)
+            avg_mineral_density = sum(p.mineral_density for p in planets) / len(planets)
+            score_v = overall_area / (avg_mineral_density**2)
+            rows.append(
+                {
+                    "gx": s["gx"],
+                    "gy": s["gy"],
+                    "sx": s["sx"],
+                    "sy": s["sy"],
+                    "star_type": s["star_type"],
+                    "planet_count": s["planet_count"],
+                    "overall_area": overall_area,
+                    "avg_mineral_density": round(avg_mineral_density, 2),
+                    "score_v": round(score_v, 4),
+                    "planet_type_stats": dict(s["planet_type_counter"]),
+                }
+            )
+
+        valid_keys = {"overall_area", "avg_mineral_density", "score_v", "planet_count", "gx", "gy", "sx", "sy"}
+        if sort_key not in valid_keys:
+            sort_key = "overall_area"
+
+        if desc is None:
+            desc = sort_key != "avg_mineral_density"
+
+        rows = sorted(
+            rows,
+            key=lambda r: (r[sort_key], r["gx"], r["gy"], r["sx"], r["sy"]),
+            reverse=desc,
+        )
+
+        page = max(1, page)
+        page_size = max(1, min(100, page_size))
+        total = len(rows)
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, total_pages)
+        begin = (page - 1) * page_size
+        end = begin + page_size
+        return {
+            "rows": rows[begin:end],
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "sort_key": sort_key,
+            "desc": desc,
+        }
+
 
 HTML = """<!doctype html>
-<html lang=\"zh-CN\">
+<html lang="zh-CN">
 <head>
-  <meta charset=\"utf-8\" />
-  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Weathering Universe Explorer</title>
-  <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css\">
-  <script type=\"module\" src=\"https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js\"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <script type="module" src="https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js"></script>
   <style>
     :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; }
     * { box-sizing:border-box; }
     body { margin:0; background:radial-gradient(circle at 10% 10%, #15284c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; overflow:hidden; }
-    .app { display:grid; grid-template-columns: 420px 1fr; height:100vh; padding:12px; gap:12px; }
+    .app { display:flex; flex-direction:column; height:100vh; padding:12px; gap:12px; }
     .app.hidden { display:none; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border:1px solid var(--line); border-radius:12px; background:rgba(15,26,48,.95); }
+    .brand { font-size:14px; color:var(--sub); letter-spacing:.04em; font-weight:700; }
+    .tabs { display:flex; gap:8px; }
+    .tab-btn { border:1px solid #2f4e7b; border-radius:10px; background:#122240; color:#cde3ff; padding:8px 12px; cursor:pointer; }
+    .tab-btn.active { border-color:#4f80cb; background:#1a315a; color:#fff; }
+    .view { display:none; min-height:0; flex:1; }
+    .view.active { display:grid; }
+    .view.nav-view { grid-template-columns:420px 1fr; gap:12px; }
+    .view.rank-view { grid-template-columns:1fr; gap:12px; }
     .panel { overflow:auto; padding:14px; background:rgba(15,26,48,.9); border:1px solid var(--line); border-radius:14px; }
     .title { color:var(--sub); margin:0 0 12px; font-size:16px; font-weight:700; letter-spacing:.04em; }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+    .toolbar { display:grid; grid-template-columns: 1fr auto auto auto auto; align-items:center; gap:8px; margin-bottom:10px; }
+    .toolbar .hint { white-space:nowrap; }
     .node { padding:11px 12px; border-radius:10px; border:1px solid #2a4068; margin-bottom:8px; cursor:pointer; background:#0e1930; transition:.18s ease; }
     .node:hover { background:#142548; border-color:#3f6bad; transform:translateY(-1px); }
+    .rank-node { position:relative; padding-right:20px; }
+    .rank-meta { color:#9bb6dd; font-size:12px; margin-top:4px; }
+    .hover-panel { position:absolute; right:8px; top:8px; width:265px; background:#0a162f; border:1px solid #466da6; border-radius:10px; padding:8px; display:none; z-index:2; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+    .rank-node:hover .hover-panel { display:block; }
+    .pager { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
     .hint { color:#9bb6dd; font-size:12px; }
     .kv { margin:9px 0; line-height:1.5; }
     .pill { display:inline-block; margin:4px 6px 4px 0; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#132748; }
@@ -616,43 +695,68 @@ HTML = """<!doctype html>
   </style>
 </head>
 <body>
-<div id=\"loadingOverlay\" class=\"loading-overlay\">
-  <div class=\"loading-card\">
-    <h2 class=\"loading-title\">加载中</h2>
-    <div id=\"loadingStats\" class=\"hint\" style=\"margin-bottom:8px\">正在构建宇宙索引...</div>
-    <div class=\"progress\"><div id=\"loadingBar\" class=\"bar\"></div></div>
+<div id="loadingOverlay" class="loading-overlay">
+  <div class="loading-card">
+    <h2 class="loading-title">加载中</h2>
+    <div id="loadingStats" class="hint" style="margin-bottom:8px">正在构建宇宙索引...</div>
+    <div class="progress"><div id="loadingBar" class="bar"></div></div>
   </div>
 </div>
 
-<div id=\"app\" class=\"app hidden\">
-  <aside class=\"panel\">
-    <div>
-      <h3 class=\"title\">导航</h3>
-      <div class=\"row\">
-        <button id=\"backBtn\" class=\"btn-icon\"><i class=\"bi bi-arrow-left-circle\"></i> 返回</button>
-        <span id=\"breadcrumb\" class=\"hint\">宇宙 / 星系列表</span>
-      </div>
-
-      <div id=\"searchBlock\" class=\"row\">
-        <fluent-text-field id=\"coordSearch\" placeholder=\"x,y\" style=\"width:160px\"></fluent-text-field>
-        <button id=\"searchBtn\" class=\"btn-icon\"><i class=\"bi bi-search\"></i></button>
-      </div>
-
-      <div class=\"row\">
-        <fluent-select id=\"sortKey\" style=\"width:180px\"></fluent-select>
-        <button id=\"sortDirBtn\" class=\"btn-icon\" title=\"切换升降序\"><i id=\"sortDirIcon\" class=\"bi bi-sort-down-alt\"></i></button>
-      </div>
-
-      <div id=\"list\"></div>
+<div id="app" class="app hidden">
+  <header class="topbar">
+    <div class="brand">Weathering Universe Explorer</div>
+    <div class="tabs">
+      <button id="tabNav" class="tab-btn active">导航检索</button>
+      <button id="tabRank" class="tab-btn">恒星系排行</button>
     </div>
-  </aside>
+  </header>
 
-  <main class=\"panel\">
-    <div>
-      <h3 class=\"title\">具体信息</h3>
-      <div id=\"info\" class=\"hint\">启动中：正在加载全部星球数据...</div>
-    </div>
-  </main>
+  <section id="navView" class="view nav-view active">
+    <aside class="panel">
+      <h3 class="title">导航</h3>
+      <div class="row">
+        <button id="backBtn" class="btn-icon"><i class="bi bi-arrow-left-circle"></i> 返回</button>
+        <span id="breadcrumb" class="hint">宇宙 / 星系列表</span>
+      </div>
+
+      <div id="searchBlock" class="toolbar">
+        <fluent-text-field id="coordSearch" placeholder="x,y" style="width:180px"></fluent-text-field>
+        <button id="searchBtn" class="btn-icon"><i class="bi bi-search"></i></button>
+        <fluent-select id="sortKey" style="width:180px"></fluent-select>
+        <button id="sortDirBtn" class="btn-icon" title="切换升降序"><i id="sortDirIcon" class="bi bi-sort-down-alt"></i></button>
+        <span id="sortLabel" class="hint">升序</span>
+      </div>
+
+      <div id="list"></div>
+    </aside>
+
+    <main class="panel">
+      <h3 class="title">具体信息</h3>
+      <div id="info" class="hint">启动中：正在加载全部星球数据...</div>
+    </main>
+  </section>
+
+  <section id="rankView" class="view rank-view">
+    <main class="panel">
+      <h3 class="title">恒星系综合排行（全宇宙）</h3>
+      <div class="toolbar" style="grid-template-columns:auto auto auto auto 1fr;">
+        <span class="hint">排序：</span>
+        <fluent-select id="rankSortKey" style="width:220px"></fluent-select>
+        <button id="rankSortDirBtn" class="btn-icon" title="切换升降序"><i id="rankSortDirIcon" class="bi bi-sort-up-alt"></i></button>
+        <button id="rankRefreshBtn" class="btn-icon">刷新</button>
+        <span id="rankSortDesc" class="hint"></span>
+      </div>
+      <div class="pager">
+        <div class="row" style="margin:0">
+          <button id="rankPrev" class="btn-icon">上一页</button>
+          <button id="rankNext" class="btn-icon">下一页</button>
+        </div>
+        <span id="rankPageInfo" class="hint"></span>
+      </div>
+      <div id="rankList"></div>
+    </main>
+  </section>
 </div>
 
 <script>
@@ -666,14 +770,57 @@ const list = document.getElementById('list');
 const breadcrumb = document.getElementById('breadcrumb');
 const sortKey = document.getElementById('sortKey');
 const sortDirIcon = document.getElementById('sortDirIcon');
+const sortLabel = document.getElementById('sortLabel');
+const tabNav = document.getElementById('tabNav');
+const tabRank = document.getElementById('tabRank');
+const navView = document.getElementById('navView');
+const rankView = document.getElementById('rankView');
+const rankList = document.getElementById('rankList');
+const rankSortKey = document.getElementById('rankSortKey');
+const rankSortDirIcon = document.getElementById('rankSortDirIcon');
+const rankSortDesc = document.getElementById('rankSortDesc');
+const rankPageInfo = document.getElementById('rankPageInfo');
 
 let state = {
+  tab: 'nav',
   level: 'galaxy',
   gx: null, gy: null,
   sx: null, sy: null,
   sort_key: 'x',
   desc: false,
+  rank: {
+    page: 1,
+    page_size: 25,
+    sort_key: 'overall_area',
+    desc: true,
+    total_pages: 1,
+  },
 };
+
+function defaultRankDesc(sortKey){
+  return sortKey !== 'avg_mineral_density';
+}
+
+function setSortIndicator(){
+  sortDirIcon.className = state.desc ? 'bi bi-sort-up-alt' : 'bi bi-sort-down-alt';
+  sortLabel.textContent = state.desc ? '降序' : '升序';
+}
+
+function setRankSortIndicator(){
+  rankSortDirIcon.className = state.rank.desc ? 'bi bi-sort-up-alt' : 'bi bi-sort-down-alt';
+  rankSortDesc.textContent = state.rank.sort_key === 'avg_mineral_density'
+    ? `当前${state.rank.desc ? '降序（高密度优先）' : '升序（低密度优先）'}`
+    : `当前${state.rank.desc ? '降序' : '升序'}`;
+}
+
+function switchTab(tab){
+  state.tab = tab;
+  const navActive = tab === 'nav';
+  tabNav.classList.toggle('active', navActive);
+  tabRank.classList.toggle('active', !navActive);
+  navView.classList.toggle('active', navActive);
+  rankView.classList.toggle('active', !navActive);
+}
 
 function setSortOptions(level){
   sortKey.innerHTML = '';
@@ -727,10 +874,9 @@ function renderInfo(data){
       <div class='kv'><b>坐标:</b> 星系(${data.galaxy_x},${data.galaxy_y}) / 恒星系(${data.star_system_x},${data.star_system_y}) / 行星(${data.planet_x},${data.planet_y})</div>
       <div class='kv'><b>恒星类型:</b> ${data.star_type}</div>
       <div class='kv'><b>行星类型:</b> ${data.planet_type}</div>
-      <div class='kv'><b>昼夜周期:</b> ${data.seconds_for_a_day}s</div>
-      <div class='kv'><b>四季周期:</b> ${data.days_for_a_year}天</div>
-      <div class='kv'><b>月相周期:</b> ${data.days_for_a_month}天</div>
-      <div class='kv'><b>四季月相:</b> ${data.month_for_a_year}</div>
+      <div class='kv'><b>昼夜周期(秒):</b> ${data.seconds_for_a_day}</div>
+      <div class='kv'><b>月份天数:</b> ${data.days_for_a_month}</div>
+      <div class='kv'><b>年份天数:</b> ${data.days_for_a_year}</div>
       <div class='kv'><b>星球大小:</b> ${data.planet_size}</div>
       <div class='kv'><b>矿物稀疏度:</b> ${data.mineral_density}</div>
     `;
@@ -759,8 +905,7 @@ async function loadList(search=''){
         state.gx = r.x; state.gy = r.y;
         state.sort_key = 'x';
         setSortOptions('system');
-        const infoData = await getJson(`${API}/galaxy_info?gx=${r.x}&gy=${r.y}`);
-        renderInfo(infoData);
+        renderInfo(await getJson(`${API}/galaxy_info?gx=${r.x}&gy=${r.y}`));
         await loadList('');
       };
       list.appendChild(div);
@@ -781,8 +926,7 @@ async function loadList(search=''){
         state.sx = r.x; state.sy = r.y;
         state.sort_key = 'planet_x';
         setSortOptions('planet');
-        const infoData = await getJson(`${API}/system_info?gx=${state.gx}&gy=${state.gy}&sx=${r.x}&sy=${r.y}`);
-        renderInfo(infoData);
+        renderInfo(await getJson(`${API}/system_info?gx=${state.gx}&gy=${state.gy}&sx=${r.x}&sy=${r.y}`));
         await loadList('');
       };
       list.appendChild(div);
@@ -800,6 +944,38 @@ async function loadList(search=''){
     div.onclick = ()=> renderInfo(p);
     list.appendChild(div);
   }
+}
+
+function formatStats(stats){
+  const parts = Object.entries(stats || {}).sort((a,b)=>b[1]-a[1]).slice(0,4).map(([k,v])=>`${k}:${v}`);
+  return parts.join(' · ') || '无';
+}
+
+async function loadRankings(){
+  rankList.innerHTML = '<div class="hint">加载排行中...</div>';
+  const data = await getJson(`${API}/system_rankings?sort_key=${state.rank.sort_key}&desc=${state.rank.desc?1:0}&page=${state.rank.page}&page_size=${state.rank.page_size}`);
+  state.rank.page = data.page;
+  state.rank.total_pages = data.total_pages;
+  rankPageInfo.textContent = `第 ${data.page}/${data.total_pages} 页 · 共 ${data.total} 个恒星系`;
+  setRankSortIndicator();
+
+  rankList.innerHTML = '';
+  data.rows.forEach((r, idx)=>{
+    const rankNo = (data.page - 1) * data.page_size + idx + 1;
+    const div = document.createElement('div');
+    div.className = 'node rank-node';
+    div.innerHTML = `
+      <div><b>#${rankNo}</b> 星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy}) · ${r.star_type}</div>
+      <div class='rank-meta'>总面积S=${r.overall_area} · 平均矿物稀疏度A=${r.avg_mineral_density} · 评分v=${r.score_v} · 行星数=${r.planet_count}</div>
+      <div class='hover-panel'>
+        <div><b>位置</b>：星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy})</div>
+        <div><b>恒星</b>：${r.star_type}</div>
+        <div><b>组成</b>：${formatStats(r.planet_type_stats)}</div>
+        <div><b>指标</b>：S=${r.overall_area}, A=${r.avg_mineral_density}, v=${r.score_v}</div>
+      </div>
+    `;
+    rankList.appendChild(div);
+  });
 }
 
 async function jumpBySearch(){
@@ -824,7 +1000,7 @@ async function jumpBySearch(){
     state.gx = c.x; state.gy = c.y;
     state.sort_key = 'x';
     state.desc = false;
-    sortDirIcon.className = 'bi bi-sort-down-alt';
+    setSortIndicator();
     setSortOptions('system');
     renderInfo(await getJson(`${API}/galaxy_info?gx=${c.x}&gy=${c.y}`));
     await loadList('');
@@ -841,7 +1017,7 @@ async function jumpBySearch(){
     state.sx = c.x; state.sy = c.y;
     state.sort_key = 'planet_x';
     state.desc = false;
-    sortDirIcon.className = 'bi bi-sort-down-alt';
+    setSortIndicator();
     setSortOptions('planet');
     renderInfo(await getJson(`${API}/system_info?gx=${state.gx}&gy=${state.gy}&sx=${c.x}&sy=${c.y}`));
     await loadList('');
@@ -871,7 +1047,16 @@ async function init() {
     }
     await new Promise(r => setTimeout(r, 300));
   }
+
   setSortOptions('galaxy');
+  setSortIndicator();
+  rankSortKey.innerHTML = `
+    <fluent-option value="overall_area">overall_area (总面积S)</fluent-option>
+    <fluent-option value="avg_mineral_density">avg_mineral_density (矿物稀疏度A)</fluent-option>
+    <fluent-option value="score_v">score_v = S/(A**2)</fluent-option>
+  `;
+  rankSortKey.value = state.rank.sort_key;
+  setRankSortIndicator();
   await loadList('');
 }
 
@@ -882,7 +1067,7 @@ document.getElementById('sortKey').onchange = async (e)=>{
 
 document.getElementById('sortDirBtn').onclick = async ()=>{
   state.desc = !state.desc;
-  sortDirIcon.className = state.desc ? 'bi bi-sort-up-alt' : 'bi bi-sort-down-alt';
+  setSortIndicator();
   await loadList(document.getElementById('coordSearch').value.trim());
 };
 
@@ -911,8 +1096,43 @@ document.getElementById('backBtn').onclick = async ()=>{
     info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
   }
   state.desc = false;
-  sortDirIcon.className = 'bi bi-sort-down-alt';
+  setSortIndicator();
   await loadList('');
+};
+
+tabNav.onclick = ()=> switchTab('nav');
+tabRank.onclick = async ()=>{
+  switchTab('rank');
+  await loadRankings();
+};
+
+rankSortKey.onchange = async (e)=>{
+  state.rank.sort_key = e.target.value;
+  state.rank.desc = defaultRankDesc(state.rank.sort_key);
+  state.rank.page = 1;
+  await loadRankings();
+};
+
+document.getElementById('rankSortDirBtn').onclick = async ()=>{
+  state.rank.desc = !state.rank.desc;
+  state.rank.page = 1;
+  await loadRankings();
+};
+
+document.getElementById('rankRefreshBtn').onclick = async ()=>{
+  await loadRankings();
+};
+
+document.getElementById('rankPrev').onclick = async ()=>{
+  if (state.rank.page <= 1) return;
+  state.rank.page -= 1;
+  await loadRankings();
+};
+
+document.getElementById('rankNext').onclick = async ()=>{
+  if (state.rank.page >= state.rank.total_pages) return;
+  state.rank.page += 1;
+  await loadRankings();
 };
 
 init();
@@ -998,6 +1218,18 @@ class AppHTTP(BaseHTTPRequestHandler):
                 return
             if path == "/api/planet":
                 self._json(self.service.planet_info(params["map_key"]))
+                return
+            if path == "/api/system_rankings":
+                desc_value = params.get("desc")
+                desc = None if desc_value is None else desc_value == "1"
+                self._json(
+                    self.service.list_system_rankings(
+                        sort_key=params.get("sort_key", "overall_area"),
+                        desc=desc,
+                        page=int(params.get("page", "1")),
+                        page_size=int(params.get("page_size", "25")),
+                    )
+                )
                 return
             self._json({"error": "not found"}, status=404)
         except Exception as e:
