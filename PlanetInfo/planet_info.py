@@ -4,9 +4,9 @@ import json
 import os
 import inspect
 import math
+import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -347,6 +347,36 @@ class UniverseService:
         self._preload_thread: Optional[threading.Thread] = None
         self._preload_rows_done = 0
         self._preload_rows_total = UNIVERSE_SIZE
+        self._preload_chunks_done = 0
+        self._preload_chunks_total = 0
+        self._preload_workers = 0
+        self._preload_active_workers = 0
+        self._preload_started_at = 0.0
+        self._preload_thread_stats: Dict[int, Dict[str, object]] = {}
+        self._preload_target_threads = 8
+        self._preload_stage = "idle"
+        self._theme = "light"
+
+    @staticmethod
+    def _sanitize_threads(value: int) -> int:
+        return max(1, min(32, int(value)))
+
+    def get_settings(self) -> Dict[str, object]:
+        return {
+            "theme": self._theme,
+            "threads": self._preload_target_threads,
+            "threads_max": 32,
+        }
+
+    def update_settings(self, *, threads: Optional[int] = None, theme: Optional[str] = None) -> Dict[str, object]:
+        if theme is not None:
+            t = theme.strip().lower()
+            if t in {"light", "dark"}:
+                self._theme = t
+        if threads is not None:
+            with self._preload_lock:
+                self._preload_target_threads = self._sanitize_threads(threads)
+        return self.get_settings()
 
     def ensure_preload_started(self) -> None:
         with self._preload_lock:
@@ -357,15 +387,26 @@ class UniverseService:
             self._preload_thread.start()
 
     def preload_status(self) -> Dict[str, object]:
+        elapsed = max(0.0, time.time() - self._preload_started_at) if self._preload_started_at else 0.0
         progress = min(100, int((self._preload_rows_done / max(1, self._preload_rows_total)) * 100))
         if self.preloaded:
             progress = 100
+        rows_per_sec = self._preload_rows_done / max(0.0001, elapsed) if self.preloading else 0.0
+        thread_stats = {str(k): dict(v) for k, v in sorted(self._preload_thread_stats.items())}
         return {
             "ready": self.preloaded,
             "preloading": self.preloading,
             "progress_percent": progress,
             "rows_done": self._preload_rows_done,
             "rows_total": self._preload_rows_total,
+            "chunks_done": self._preload_chunks_done,
+            "chunks_total": self._preload_chunks_total,
+            "workers": self._preload_workers,
+            "active_workers": self._preload_active_workers,
+            "stage": self._preload_stage,
+            "thread_stats": thread_stats,
+            "rows_per_sec": round(rows_per_sec, 2),
+            "elapsed_seconds": round(elapsed, 2),
             "galaxy_count": len(self.galaxies),
             "system_count": len(self.systems),
             "planet_count": len(self.planets_by_key),
@@ -375,7 +416,14 @@ class UniverseService:
     @staticmethod
     def _scan_galaxy_rows(
         gy_start: int, gy_end: int
-    ) -> Tuple[int, Dict[Tuple[int, int], Dict[str, object]], Dict[Tuple[int, int, int, int], Dict[str, object]], Dict[str, PlanetRecord]]:
+    ) -> Tuple[
+        int,
+        Dict[Tuple[int, int], Dict[str, object]],
+        Dict[Tuple[int, int, int, int], Dict[str, object]],
+        Dict[str, PlanetRecord],
+        Dict[str, object],
+    ]:
+        started = time.time()
         chunk_galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
         chunk_systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
         chunk_planets: Dict[str, PlanetRecord] = {}
@@ -443,7 +491,12 @@ class UniverseService:
                                 chunk_systems[skey]["planet_type_counter"][p.planet_type] += 1
                                 chunk_galaxies[gkey]["planet_count"] += 1
 
-        return gy_end - gy_start, chunk_galaxies, chunk_systems, chunk_planets
+        worker_meta = {
+            "worker_id": threading.get_ident(),
+            "row_range": (gy_start, gy_end),
+            "scan_seconds": time.time() - started,
+        }
+        return gy_end - gy_start, chunk_galaxies, chunk_systems, chunk_planets, worker_meta
 
     def preload_all(self) -> None:
         wait_thread: Optional[threading.Thread] = None
@@ -461,33 +514,147 @@ class UniverseService:
             return
 
         start = time.time()
+        self._preload_started_at = start
         self._preload_rows_done = 0
+        self._preload_chunks_done = 0
+        self._preload_active_workers = 0
+        self._preload_thread_stats = {}
+        self._preload_stage = "dispatch"
         print("[PlanetInfo] 开始预加载宇宙数据...")
 
-        cpu = os.cpu_count() or 4
-        workers = max(2, min(8, cpu))
-        chunk_size = 2
+        workers = self._sanitize_threads(self._preload_target_threads)
+        chunk_size = 1
         row_ranges = [(gy, min(UNIVERSE_SIZE, gy + chunk_size)) for gy in range(0, UNIVERSE_SIZE, chunk_size)]
+        self._preload_workers = workers
+        self._preload_chunks_total = len(row_ranges)
+        self._preload_stage = "scanning"
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {executor.submit(self._scan_galaxy_rows, gy0, gy1): (gy0, gy1) for gy0, gy1 in row_ranges}
-            for future in as_completed(future_map):
-                rows_done, row_galaxies, row_systems, row_planets = future.result()
-                self.galaxies.update(row_galaxies)
-                self.systems.update(row_systems)
-                self.planets_by_key.update(row_planets)
-                self._preload_rows_done += rows_done
+        print(f"[PlanetInfo] 预加载线程池: workers={workers}, chunk_size={chunk_size}, chunks={self._preload_chunks_total}")
 
-                if self._preload_rows_done % 10 == 0 or self._preload_rows_done >= UNIVERSE_SIZE:
-                    pct = int(self._preload_rows_done * 100 / UNIVERSE_SIZE)
-                    print(
-                        f"[PlanetInfo] 预加载进度: {self._preload_rows_done}/{UNIVERSE_SIZE} ({pct}%), "
-                        f"星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}"
+        task_queue: "queue.Queue[Optional[Tuple[int, int]]]" = queue.Queue()
+        done_queue: "queue.Queue[Tuple[str, Dict[str, object]]]" = queue.Queue()
+        for row_range in row_ranges:
+            task_queue.put(row_range)
+        for _ in range(workers):
+            task_queue.put(None)
+
+        def worker_loop(slot: int) -> None:
+            while True:
+                row_range = task_queue.get()
+                if row_range is None:
+                    done_queue.put(("worker_done", {"slot": slot}))
+                    return
+                gy0, gy1 = row_range
+                self._preload_thread_stats[slot] = {
+                    **self._preload_thread_stats.get(slot, {}),
+                    "state": "running",
+                    "last_range": f"{gy0}-{max(gy0, gy1 - 1)}",
+                    "updated_at": round(time.time(), 3),
+                }
+                rows_done, row_galaxies, row_systems, row_planets, worker_meta = self._scan_galaxy_rows(gy0, gy1)
+                done_queue.put(
+                    (
+                        "chunk",
+                        {
+                            "slot": slot,
+                            "rows_done": rows_done,
+                            "row_galaxies": row_galaxies,
+                            "row_systems": row_systems,
+                            "row_planets": row_planets,
+                            "worker_meta": worker_meta,
+                        },
                     )
+                )
 
+        worker_threads = []
+        self._preload_active_workers = workers
+        for slot in range(1, workers + 1):
+            self._preload_thread_stats[slot] = {
+                "state": "idle",
+                "rows": 0,
+                "chunks": 0,
+                "last_range": "-",
+                "last_chunk_planets": 0,
+                "last_chunk_systems": 0,
+                "last_chunk_seconds": 0.0,
+                "updated_at": round(time.time(), 3),
+            }
+            t = threading.Thread(target=worker_loop, args=(slot,), daemon=True)
+            t.start()
+            worker_threads.append(t)
+
+        workers_done = 0
+        while workers_done < workers:
+            event_type, payload = done_queue.get()
+            if event_type == "worker_done":
+                workers_done += 1
+                slot = int(payload.get("slot", 0))
+                self._preload_thread_stats[slot] = {
+                    **self._preload_thread_stats.get(slot, {}),
+                    "state": "done",
+                    "updated_at": round(time.time(), 3),
+                }
+                self._preload_active_workers = max(0, workers - workers_done)
+                continue
+
+            slot = int(payload.get("slot", 0))
+            row_galaxies = payload["row_galaxies"]
+            row_systems = payload["row_systems"]
+            row_planets = payload["row_planets"]
+            rows_done = int(payload["rows_done"])
+            worker_meta = payload["worker_meta"]
+
+            self.galaxies.update(row_galaxies)
+            self.systems.update(row_systems)
+            self.planets_by_key.update(row_planets)
+            self._preload_rows_done += rows_done
+            self._preload_chunks_done += 1
+
+            gy0, gy1 = worker_meta.get("row_range", (0, 0))
+            chunk_elapsed = float(worker_meta.get("scan_seconds", 0.0))
+            prev = self._preload_thread_stats.get(slot, {})
+            thread_rows = int(prev.get("rows", 0)) + rows_done
+            thread_chunks = int(prev.get("chunks", 0)) + 1
+            thread_speed = thread_rows / max(0.0001, time.time() - start)
+            self._preload_thread_stats[slot] = {
+                **prev,
+                "state": "running",
+                "rows": thread_rows,
+                "chunks": thread_chunks,
+                "speed_rows_per_sec": round(thread_speed, 2),
+                "last_range": f"{gy0}-{max(gy0, gy1 - 1)}",
+                "last_chunk_planets": len(row_planets),
+                "last_chunk_systems": len(row_systems),
+                "last_chunk_seconds": round(chunk_elapsed, 3),
+                "updated_at": round(time.time(), 3),
+            }
+
+            elapsed = max(0.0001, time.time() - start)
+            row_pct = self._preload_rows_done * 100.0 / max(1, UNIVERSE_SIZE)
+            chunk_pct = self._preload_chunks_done * 100.0 / max(1, self._preload_chunks_total)
+            speed = self._preload_rows_done / elapsed
+            eta = max(0.0, (UNIVERSE_SIZE - self._preload_rows_done) / speed) if speed > 0 else 0.0
+            bar_len = 24
+            filled = int((row_pct / 100.0) * bar_len)
+            bar = "█" * filled + "░" * (bar_len - filled)
+
+            print(
+                f"[PlanetInfo] [{bar}] {row_pct:5.1f}% | chunk {self._preload_chunks_done:03d}/{self._preload_chunks_total:03d} ({chunk_pct:5.1f}%) | "
+                f"worker#{slot:02d} range[{gy0},{gy1}) {chunk_elapsed:.3f}s | speed {speed:.2f} rows/s | ETA {eta:.1f}s | "
+                f"g={len(self.galaxies)} s={len(self.systems)} p={len(self.planets_by_key)}"
+            )
+
+        for t in worker_threads:
+            t.join(timeout=0.1)
+
+        self._preload_active_workers = 0
+        self._preload_stage = "finalizing"
+        for st in self._preload_thread_stats.values():
+            st["state"] = "done"
         self.preloaded = True
         self.preloading = False
         self._preload_thread = None
+        self._preload_stage = "ready"
         self.preload_seconds = time.time() - start
         print(
             f"[PlanetInfo] 预加载完成: 星系={len(self.galaxies)}, 恒星系={len(self.systems)}, "
@@ -1363,6 +1530,19 @@ class AppHTTP(BaseHTTPRequestHandler):
             if path == "/api/preload_status":
                 self.service.ensure_preload_started()
                 self._json(self.service.preload_status())
+                return
+            if path == "/api/settings":
+                threads = params.get("threads")
+                theme = params.get("theme")
+                if threads is None and theme is None:
+                    self._json(self.service.get_settings())
+                else:
+                    self._json(
+                        self.service.update_settings(
+                            threads=None if threads is None else int(threads),
+                            theme=theme,
+                        )
+                    )
                 return
             if path == "/api/app_info":
                 self._json(self.service.app_info())
