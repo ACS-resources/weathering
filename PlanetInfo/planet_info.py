@@ -5,6 +5,7 @@ import os
 import inspect
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -259,6 +260,8 @@ class UniverseService:
         self.systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
         self._preload_lock = threading.Lock()
         self._preload_thread: Optional[threading.Thread] = None
+        self._preload_rows_done = 0
+        self._preload_rows_total = UNIVERSE_SIZE
 
     def ensure_preload_started(self) -> None:
         with self._preload_lock:
@@ -269,14 +272,91 @@ class UniverseService:
             self._preload_thread.start()
 
     def preload_status(self) -> Dict[str, object]:
+        progress = min(100, int((self._preload_rows_done / max(1, self._preload_rows_total)) * 100))
+        if self.preloaded:
+            progress = 100
         return {
             "ready": self.preloaded,
             "preloading": self.preloading,
+            "progress_percent": progress,
+            "rows_done": self._preload_rows_done,
+            "rows_total": self._preload_rows_total,
             "galaxy_count": len(self.galaxies),
             "system_count": len(self.systems),
             "planet_count": len(self.planets_by_key),
             "preload_seconds": round(self.preload_seconds, 2),
         }
+
+    @staticmethod
+    def _scan_galaxy_row(gy: int) -> Tuple[int, Dict[Tuple[int, int], Dict[str, object]], Dict[Tuple[int, int, int, int], Dict[str, object]], Dict[str, PlanetRecord]]:
+        row_galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
+        row_systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
+        row_planets: Dict[str, PlanetRecord] = {}
+
+        for gx in range(UNIVERSE_SIZE):
+            if not is_galaxy((gx, gy)):
+                continue
+            gkey = (gx, gy)
+            row_galaxies[gkey] = {
+                "x": gx,
+                "y": gy,
+                "system_keys": [],
+                "planet_count": 0,
+                "star_type_counter": Counter(),
+            }
+
+            for sy in range(GALAXY_SIZE):
+                for sx in range(GALAXY_SIZE):
+                    if not is_star_system((gx, gy), (sx, sy)):
+                        continue
+                    ss_map_key = build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])
+                    star_type = calculate_star_type(ss_map_key)
+
+                    skey = (gx, gy, sx, sy)
+                    row_galaxies[gkey]["system_keys"].append(skey)
+                    row_galaxies[gkey]["star_type_counter"][star_type] += 1
+
+                    row_systems[skey] = {
+                        "gx": gx,
+                        "gy": gy,
+                        "sx": sx,
+                        "sy": sy,
+                        "star_type": star_type,
+                        "planet_keys": [],
+                        "planet_count": 0,
+                        "planet_type_counter": Counter(),
+                    }
+
+                    ss_hash_i = csharp_int32(HashUtility.hash_string(ss_map_key))
+                    main_star, second_star = _star_positions(ss_map_key)
+
+                    for py in range(STAR_SYSTEM_SIZE):
+                        for px in range(STAR_SYSTEM_SIZE):
+                            is_star_tile = (px, py) == main_star or (second_star is not None and (px, py) == second_star)
+                            tile_hash = HashUtility.hash_tile(px, py, STAR_SYSTEM_SIZE, STAR_SYSTEM_SIZE, ss_hash_i)
+                            h = HashUtility.hash_uint(tile_hash)
+
+                            if is_star_tile:
+                                continue
+                            h = HashUtility.hash_uint(h)
+                            if h % 50 != 0:
+                                continue
+                            h = HashUtility.hash_uint(h)
+                            if h % 2 != 0:
+                                continue
+
+                            map_key = build_map_key("MapOfPlanet", [(gx, gy), (sx, sy), (px, py)])
+                            try:
+                                p = compute_planet_record(map_key)
+                            except ValueError:
+                                continue
+                            row_planets[p.map_key] = p
+                            row_systems[skey]["planet_keys"].append(p.map_key)
+                            row_systems[skey]["planet_count"] += 1
+                            row_systems[skey]["planet_type_counter"][p.planet_type] += 1
+                            row_galaxies[gkey]["planet_count"] += 1
+
+        return gy, row_galaxies, row_systems, row_planets
 
     def preload_all(self) -> None:
         wait_thread: Optional[threading.Thread] = None
@@ -294,77 +374,23 @@ class UniverseService:
             return
 
         start = time.time()
+        self._preload_rows_done = 0
         print("[PlanetInfo] 开始预加载宇宙数据...")
+        workers = max(2, min(8, os.cpu_count() or 4))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_map = {executor.submit(self._scan_galaxy_row, gy): gy for gy in range(UNIVERSE_SIZE)}
+            for i, future in enumerate(as_completed(future_map), start=1):
+                _, row_galaxies, row_systems, row_planets = future.result()
+                self.galaxies.update(row_galaxies)
+                self.systems.update(row_systems)
+                self.planets_by_key.update(row_planets)
+                self._preload_rows_done = i
 
-        for gy in range(UNIVERSE_SIZE):
-            for gx in range(UNIVERSE_SIZE):
-                if not is_galaxy((gx, gy)):
-                    continue
-                gkey = (gx, gy)
-                self.galaxies[gkey] = {
-                    "x": gx,
-                    "y": gy,
-                    "system_keys": [],
-                    "planet_count": 0,
-                    "star_type_counter": Counter(),
-                }
-
-                for sy in range(GALAXY_SIZE):
-                    for sx in range(GALAXY_SIZE):
-                        if not is_star_system((gx, gy), (sx, sy)):
-                            continue
-                        ss_map_key = build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])
-                        star_type = calculate_star_type(ss_map_key)
-
-                        skey = (gx, gy, sx, sy)
-                        self.galaxies[gkey]["system_keys"].append(skey)
-                        self.galaxies[gkey]["star_type_counter"][star_type] += 1
-
-                        self.systems[skey] = {
-                            "gx": gx,
-                            "gy": gy,
-                            "sx": sx,
-                            "sy": sy,
-                            "star_type": star_type,
-                            "planet_keys": [],
-                            "planet_count": 0,
-                            "planet_type_counter": Counter(),
-                        }
-
-                        ss_hash_i = csharp_int32(HashUtility.hash_string(build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])))
-                        main_star, second_star = _star_positions(build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)]))
-
-                        for py in range(STAR_SYSTEM_SIZE):
-                            for px in range(STAR_SYSTEM_SIZE):
-                                is_star_tile = (px, py) == main_star or (second_star is not None and (px, py) == second_star)
-                                tile_hash = HashUtility.hash_tile(px, py, STAR_SYSTEM_SIZE, STAR_SYSTEM_SIZE, ss_hash_i)
-                                h = HashUtility.hash_uint(tile_hash)
-
-                                if is_star_tile:
-                                    continue
-                                h = HashUtility.hash_uint(h)
-                                if h % 50 != 0:
-                                    continue
-                                h = HashUtility.hash_uint(h)
-                                if h % 2 != 0:
-                                    continue
-
-                                map_key = build_map_key("MapOfPlanet", [(gx, gy), (sx, sy), (px, py)])
-                                try:
-                                    p = compute_planet_record(map_key)
-                                except ValueError:
-                                    continue
-                                self.planets_by_key[p.map_key] = p
-                                self.systems[skey]["planet_keys"].append(p.map_key)
-                                self.systems[skey]["planet_count"] += 1
-                                self.systems[skey]["planet_type_counter"][p.planet_type] += 1
-                                self.galaxies[gkey]["planet_count"] += 1
-
-            if gy % 10 == 0:
-                print(
-                    f"[PlanetInfo] 预加载进度: y={gy:02d}/{UNIVERSE_SIZE - 1}, "
-                    f"星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}"
-                )
+                if i % 10 == 0 or i == UNIVERSE_SIZE:
+                    print(
+                        f"[PlanetInfo] 预加载进度: {i}/{UNIVERSE_SIZE} ({int(i * 100 / UNIVERSE_SIZE)}%), "
+                        f"星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}"
+                    )
 
         self.preloaded = True
         self.preloading = False
@@ -735,12 +761,11 @@ async function jumpBySearch(){
 }
 
 async function init() {
-  let frame = 0;
   while (true) {
     const status = await getJson(`${API}/preload_status`);
-    loadingStats.textContent = `星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
-    frame = (frame + 11) % 100;
-    loadingBar.style.width = `${Math.max(4, frame)}%`;
+    const pct = status.progress_percent || 0;
+    loadingStats.textContent = `进度 ${pct}% (${status.rows_done}/${status.rows_total}) · 星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
+    loadingBar.style.width = `${Math.max(4, pct)}%`;
     if (status.ready) {
       loadingOverlay.style.display = 'none';
       appRoot.classList.remove('hidden');
@@ -940,8 +965,8 @@ def run_app() -> None:
             webview,
             "Weathering PlanetInfo",
             "http://127.0.0.1:8765",
-            width=1320,
-            height=860,
+            width=1040,
+            height=700,
             resizable=False,
             icon=icon_path,
         )
