@@ -677,7 +677,7 @@ HTML = """<!doctype html>
     .tab-btn.active { border-color:#4f80cb; background:#1a315a; color:#fff; }
     .view { display:none; min-height:0; flex:1; }
     .view.active { display:grid; }
-    .view.nav-view { grid-template-columns:420px 1fr; gap:12px; }
+    .view.nav-view { grid-template-columns:360px 1fr; gap:12px; }
     .view.rank-view { grid-template-columns:1fr; gap:12px; }
     .panel { overflow:auto; padding:14px; background:rgba(15,26,48,.9); border:1px solid var(--line); border-radius:14px; }
     .title { color:var(--sub); margin:0 0 12px; font-size:16px; font-weight:700; letter-spacing:.04em; }
@@ -729,9 +729,9 @@ HTML = """<!doctype html>
       </div>
 
       <div id="searchBlock" class="toolbar">
-        <fluent-text-field id="coordSearch" placeholder="x,y" style="width:180px"></fluent-text-field>
+        <fluent-text-field id="coordSearch" placeholder="x,y" style="width:130px"></fluent-text-field>
         <button id="searchBtn" class="btn-icon"><i class="bi bi-search"></i></button>
-        <fluent-select id="sortKey" style="width:180px"></fluent-select>
+        <fluent-select id="sortKey" style="width:140px"></fluent-select>
         <button id="sortDirBtn" class="btn-icon" title="切换升降序"><i id="sortDirIcon" class="bi bi-sort-down-alt"></i></button>
         <span id="sortLabel" class="hint">升序</span>
       </div>
@@ -790,6 +790,7 @@ const rankSortDirIcon = document.getElementById('rankSortDirIcon');
 const rankSortDesc = document.getElementById('rankSortDesc');
 const rankPageInfo = document.getElementById('rankPageInfo');
 const rankHoverPanel = document.getElementById('rankHoverPanel');
+const forceReady = new URLSearchParams(window.location.search).get('ready') === '1';
 
 let state = {
   tab: 'nav',
@@ -1067,24 +1068,31 @@ async function jumpBySearch(){
 }
 
 async function init() {
-  const loadingStart = Date.now();
-  const MIN_LOADING_MS = 1500;
-  let sawPreloading = false;
-  while (true) {
-    const status = await getJson(`${API}/preload_status`);
-    const pct = status.progress_percent || 0;
-    if (status.preloading || !status.ready) sawPreloading = true;
-    loadingStats.textContent = `进度 ${pct}% (${status.rows_done}/${status.rows_total}) · 星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
-    loadingBar.style.width = `${Math.max(4, pct)}%`;
-    const elapsed = Date.now() - loadingStart;
-    const canEnter = status.ready && elapsed >= MIN_LOADING_MS && (sawPreloading || pct >= 100);
-    if (canEnter) {
-      loadingOverlay.style.display = 'none';
-      appRoot.classList.remove('hidden');
-      info.innerHTML = `<b>已加载</b><br>星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
-      break;
+  if (!forceReady) {
+    const loadingStart = Date.now();
+    const MIN_LOADING_MS = 1500;
+    let sawPreloading = false;
+    while (true) {
+      const status = await getJson(`${API}/preload_status`);
+      const pct = status.progress_percent || 0;
+      if (status.preloading || !status.ready) sawPreloading = true;
+      loadingStats.textContent = `进度 ${pct}% (${status.rows_done}/${status.rows_total}) · 星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
+      loadingBar.style.width = `${Math.max(4, pct)}%`;
+      const elapsed = Date.now() - loadingStart;
+      const canEnter = status.ready && elapsed >= MIN_LOADING_MS && (sawPreloading || pct >= 100);
+      if (canEnter) {
+        loadingOverlay.style.display = 'none';
+        appRoot.classList.remove('hidden');
+        info.innerHTML = `<b>已加载</b><br>星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
+        break;
+      }
+      await new Promise(r => setTimeout(r, 300));
     }
-    await new Promise(r => setTimeout(r, 300));
+  } else {
+    loadingOverlay.style.display = 'none';
+    appRoot.classList.remove('hidden');
+    const app = await getJson(`${API}/app_info`);
+    info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
   }
 
   setSortOptions('galaxy');
@@ -1328,19 +1336,56 @@ def run_app() -> None:
         return
 
     icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Assets", "Sprites", "Sprites", "icon.png"))
+    loading_html = """
+    <!doctype html><html lang='zh-CN'><head><meta charset='utf-8' />
+    <style>
+      body { margin:0; background:#071025; color:#e8f0ff; font-family:Segoe UI,system-ui,sans-serif; }
+      .card { margin:14px; padding:16px; border-radius:12px; border:1px solid #24385a; background:#0f1a30; }
+      .title { color:#8dc6ff; margin:0 0 8px; font-size:16px; }
+      .hint { color:#9bb6dd; font-size:12px; }
+    </style></head><body><div class='card'><h3 class='title'>加载中</h3><div class='hint'>正在构建宇宙索引，请稍候…</div></div></body></html>
+    """
+
+    loading_window = None
+
+    def bootstrap():
+        AppHTTP.service.ensure_preload_started()
+        while not AppHTTP.service.preloaded:
+            time.sleep(0.2)
+
+        def open_main_window() -> None:
+            nonlocal loading_window
+            try:
+                if loading_window is not None:
+                    loading_window.destroy()
+            except Exception:
+                pass
+            create_window_compat(
+                webview,
+                "Weathering PlanetInfo",
+                "http://127.0.0.1:8765?ready=1",
+                width=1220,
+                height=780,
+                resizable=True,
+                icon=icon_path,
+            )
+
+        open_main_window()
+
     try:
-        create_window_compat(
+        loading_window = create_window_compat(
             webview,
             "Weathering PlanetInfo",
-            "http://127.0.0.1:8765",
-            width=1040,
-            height=700,
+            html=loading_html,
+            width=520,
+            height=220,
             resizable=False,
-            icon=icon_path,
+            frameless=True,
         )
-        webview.start(gui="edgechromium", debug=False)
+        webview.start(bootstrap, gui="edgechromium", debug=False)
     finally:
         server.shutdown()
+
 
 
 if __name__ == "__main__":
