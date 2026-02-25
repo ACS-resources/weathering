@@ -666,21 +666,21 @@ HTML = """<!doctype html>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <script type="module" src="https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js"></script>
   <style>
-    :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; }
+    :root { --bg:#111111; --panel:#1b1b1b; --line:#4a4a4a; --txt:#f2f2f2; --sub:#cfcfcf; }
     * { box-sizing:border-box; }
-    body { margin:0; background:radial-gradient(circle at 10% 10%, #15284c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; overflow:hidden; }
+    body { margin:0; background:radial-gradient(circle at 10% 10%, #2c2c2c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; overflow:hidden; }
     .app { display:flex; flex-direction:column; height:100vh; padding:12px; gap:12px; }
     .app.hidden { display:none; }
-    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border:1px solid var(--line); border-radius:12px; background:rgba(15,26,48,.95); }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border:1px solid var(--line); border-radius:12px; background:rgba(28,28,28,.95); }
     .brand { font-size:14px; color:var(--sub); letter-spacing:.04em; font-weight:700; }
     .tabs { display:flex; gap:8px; }
-    .tab-btn { border:1px solid #2f4e7b; border-radius:10px; background:#122240; color:#cde3ff; padding:8px 12px; cursor:pointer; }
-    .tab-btn.active { border-color:#4f80cb; background:#1a315a; color:#fff; }
+    .tab-btn { border:1px solid #5a5a5a; border-radius:10px; background:#2a2a2a; color:#d8d8d8; padding:8px 12px; cursor:pointer; }
+    .tab-btn.active { border-color:#8a8a8a; background:#3a3a3a; color:#fff; }
     .view { display:none; min-height:0; flex:1; }
     .view.active { display:grid; }
     .view.nav-view { --nav-width:340px; grid-template-columns:minmax(300px, var(--nav-width)) 10px minmax(0,1fr); gap:0; align-items:stretch; }
     .view.rank-view { grid-template-columns:1fr; gap:12px; }
-    .panel { overflow:auto; padding:14px; background:rgba(15,26,48,.9); border:1px solid var(--line); border-radius:14px; }
+    .panel { overflow:auto; padding:14px; background:rgba(28,28,28,.9); border:1px solid var(--line); border-radius:14px; }
     .nav-pane { min-width:0; }
     .nav-side { border-top-right-radius:0; border-bottom-right-radius:0; border-right-width:0; }
     .nav-main { border-top-left-radius:0; border-bottom-left-radius:0; border-left-width:0; }
@@ -688,41 +688,43 @@ HTML = """<!doctype html>
       cursor:col-resize;
       user-select:none;
       position:relative;
-      background:linear-gradient(180deg, rgba(36,56,90,.9), rgba(18,34,64,.95));
-      border-left:1px solid #355281;
-      border-right:1px solid #1f3558;
+      background:linear-gradient(180deg, rgba(82,82,82,.9), rgba(48,48,48,.95));
+      border-left:1px solid #5d5d5d;
+      border-right:1px solid #3f3f3f;
     }
     .nav-divider::after {
       content:'';
       position:absolute;
       left:50%; top:50%; transform:translate(-50%,-50%);
       width:3px; height:36px; border-radius:999px;
-      background:#79a8ea;
-      box-shadow:0 0 0 1px rgba(20,43,82,.5);
+      background:#b0b0b0;
+      box-shadow:0 0 0 1px rgba(0,0,0,.45);
     }
-    .nav-divider.dragging::after { background:#a7ccff; }
+    .nav-divider.dragging::after { background:#d0d0d0; }
     .title { color:var(--sub); margin:0 0 12px; font-size:16px; font-weight:700; letter-spacing:.04em; }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
     .toolbar { display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
     .toolbar .hint { white-space:nowrap; }
     .toolbar-select { flex:1 1 120px; min-width:118px; }
     .toolbar-search { flex:1 1 88px; min-width:88px; }
-    .node { padding:11px 12px; border-radius:10px; border:1px solid #2a4068; margin-bottom:8px; cursor:pointer; background:#0e1930; transition:.18s ease; }
-    .node:hover { background:#142548; border-color:#3f6bad; transform:translateY(-1px); }
+    .node { padding:11px 12px; border-radius:10px; border:1px solid #4b4b4b; margin-bottom:8px; cursor:pointer; background:#1a1a1a; transition:.18s ease; }
+    .node:hover { background:#2a2a2a; border-color:#777; transform:translateY(-1px); }
     .rank-node { position:relative; padding-right:20px; }
-    .rank-meta { color:#9bb6dd; font-size:12px; margin-top:4px; }
-    .rank-hover-panel { position:fixed; left:0; top:0; width:290px; background:#0a162f; border:1px solid #466da6; border-radius:10px; padding:8px; display:none; z-index:9999; box-shadow:0 8px 24px rgba(0,0,0,.45); pointer-events:none; }
+    .rank-meta { color:#bdbdbd; font-size:12px; margin-top:4px; }
+    .rank-link-btn { background:none; border:none; color:#f2f2f2; text-decoration:underline; cursor:pointer; padding:0; font:inherit; }
+    .rank-link-btn:hover { color:#fff; }
+    .rank-hover-panel { position:fixed; left:0; top:0; width:290px; background:#151515; border:1px solid #787878; border-radius:10px; padding:8px; display:none; z-index:9999; box-shadow:0 8px 24px rgba(0,0,0,.45); pointer-events:none; }
     .pager { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
-    .hint { color:#9bb6dd; font-size:12px; }
+    .hint { color:#bdbdbd; font-size:12px; }
     .kv { margin:9px 0; line-height:1.5; }
-    .pill { display:inline-block; margin:4px 6px 4px 0; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#132748; }
-    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#132746; color:var(--txt); padding:7px 10px; cursor:pointer; }
-    .btn-icon:hover { background:#1b3763; }
-    .loading-overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#020617,#071025); z-index:99; }
-    .loading-card { width:min(560px,88vw); background:rgba(15,26,48,.92); border:1px solid var(--line); border-radius:14px; padding:22px; }
+    .pill { display:inline-block; margin:4px 6px 4px 0; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#2b2b2b; }
+    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#2a2a2a; color:var(--txt); padding:7px 10px; cursor:pointer; }
+    .btn-icon:hover { background:#3a3a3a; }
+    .loading-overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#0f0f0f,#1a1a1a); z-index:99; }
+    .loading-card { width:min(560px,88vw); background:rgba(28,28,28,.92); border:1px solid var(--line); border-radius:14px; padding:22px; }
     .loading-title { margin:0 0 8px; color:var(--sub); font-size:20px; }
-    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#0b1326; }
-    .bar { height:100%; width:4%; background:linear-gradient(90deg,#3b82f6,#93c5fd); }
+    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#262626; }
+    .bar { height:100%; width:4%; background:linear-gradient(90deg,#666,#cfcfcf); }
   </style>
 </head>
 <body>
@@ -829,7 +831,7 @@ let state = {
   rank: {
     page: 1,
     page_size: 25,
-    sort_key: 'overall_area',
+    sort_key: 'score_v',
     desc: true,
     total_pages: 1,
   },
@@ -1006,11 +1008,9 @@ function showRankHoverPanel(r, event){
     <div><b>位置</b>：星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy})</div>
     <div><b>恒星</b>：${r.star_type}</div>
     <div><b>组成</b>：${formatStats(r.planet_type_stats)}</div>
-    <div><b>S总面积</b>：${r.overall_area}（均值 ${r.avg_area}）</div>
-    <div><b>A平均矿物丰度</b>：${r.avg_mineral_density}</div>
-    <div><b>Σ(√Si/Ai)</b>：${r.base_value}</div>
-    <div><b>惩罚项</b>：N/log2(S̄/T+2) = ${r.cost_penalty}（T=50）</div>
-    <div><b>Vsys</b>：${r.score_v}</div>
+    <div><b>总面积</b>：${r.overall_area}</div>
+    <div><b>平均矿物丰度</b>：${r.avg_mineral_density}</div>
+    <div><b>综合评分</b>：${r.score_v}</div>
   `;
   rankHoverPanel.style.display = 'block';
   updateRankHoverPanelPosition(event);
@@ -1058,6 +1058,20 @@ function bindNavDividerDrag(){
   window.addEventListener('resize', ()=> setNavWidth(parseFloat(getComputedStyle(navView).getPropertyValue('--nav-width')) || 340));
 }
 
+async function jumpToSystemFromRanking(r){
+  switchTab('nav');
+  hideRankHoverPanel();
+  state.level = 'planet';
+  state.gx = r.gx; state.gy = r.gy;
+  state.sx = r.sx; state.sy = r.sy;
+  state.sort_key = 'planet_x';
+  state.desc = false;
+  setSortOptions('planet');
+  setSortIndicator();
+  renderInfo(await getJson(`${API}/system_info?gx=${r.gx}&gy=${r.gy}&sx=${r.sx}&sy=${r.sy}`));
+  await loadList('');
+}
+
 async function loadRankings(){
   hideRankHoverPanel();
   rankList.innerHTML = '<div class="hint">加载排行中...</div>';
@@ -1073,9 +1087,16 @@ async function loadRankings(){
     const div = document.createElement('div');
     div.className = 'node rank-node';
     div.innerHTML = `
-      <div><b>#${rankNo}</b> 星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy}) · ${r.star_type}</div>
-      <div class='rank-meta'>S=${r.overall_area} · A=${r.avg_mineral_density} · Vsys=${r.score_v} · 行星数=${r.planet_count}</div>
+      <div><b>#${rankNo}</b> <button class='rank-link-btn' data-gx='${r.gx}' data-gy='${r.gy}' data-sx='${r.sx}' data-sy='${r.sy}'>星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy})</button> · ${r.star_type}</div>
+      <div class='rank-meta'>综合=${r.score_v} · 矿物稀疏度=${r.avg_mineral_density} · 总面积=${r.overall_area} · 行星数=${r.planet_count}</div>
     `;
+    const titleBtn = div.querySelector('.rank-link-btn');
+    if (titleBtn) {
+      titleBtn.addEventListener('click', async (event)=>{
+        event.stopPropagation();
+        await jumpToSystemFromRanking(r);
+      });
+    }
     div.addEventListener('mouseenter', (event)=> showRankHoverPanel(r, event));
     div.addEventListener('mousemove', (event)=> updateRankHoverPanelPosition(event));
     div.addEventListener('mouseleave', hideRankHoverPanel);
@@ -1166,9 +1187,9 @@ async function init() {
   setSortOptions('galaxy');
   setSortIndicator();
   rankSortKey.innerHTML = `
-    <fluent-option value="overall_area">overall_area (总面积S)</fluent-option>
-    <fluent-option value="avg_mineral_density">avg_mineral_density (矿物稀疏度A)</fluent-option>
-    <fluent-option value="score_v">Vsys = Σ(√Si/Ai) × N/log2(S̄/T+2)</fluent-option>
+    <fluent-option value="score_v">综合</fluent-option>
+    <fluent-option value="avg_mineral_density">矿物稀疏度</fluent-option>
+    <fluent-option value="overall_area">总面积</fluent-option>
   `;
   rankSortKey.value = state.rank.sort_key;
   setRankSortIndicator();
@@ -1264,15 +1285,15 @@ LOADING_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Weathering PlanetInfo Loading</title>
   <style>
-    :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; }
+    :root { --bg:#111111; --panel:#1b1b1b; --line:#4a4a4a; --txt:#f2f2f2; --sub:#cfcfcf; }
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
     .wrap { width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; padding:10px; }
-    .card { width:100%; max-width:460px; border:1px solid var(--line); border-radius:12px; background:rgba(15,26,48,.95); padding:16px; }
+    .card { width:100%; max-width:460px; border:1px solid var(--line); border-radius:12px; background:rgba(28,28,28,.95); padding:16px; }
     .title { color:var(--sub); font-size:16px; margin:0 0 8px; }
-    .hint { color:#9bb6dd; font-size:12px; margin-bottom:8px; }
-    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#0b1326; }
-    .bar { height:100%; width:4%; background:linear-gradient(90deg,#3b82f6,#93c5fd); transition:width .2s ease; }
+    .hint { color:#bdbdbd; font-size:12px; margin-bottom:8px; }
+    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#262626; }
+    .bar { height:100%; width:4%; background:linear-gradient(90deg,#666,#cfcfcf); transition:width .2s ease; }
   </style>
 </head>
 <body>
