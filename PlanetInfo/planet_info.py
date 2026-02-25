@@ -6,10 +6,11 @@ import inspect
 import math
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import subprocess
 from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote
 from urllib.request import urlopen
@@ -30,6 +31,23 @@ PLANET_TYPES = {
     "PlanetContinental": "类地行星",
     "PlanetGaia": "盖亚行星",
     "PlanetSuperDimensional": "超维星球",
+}
+STAR_TYPE_NAMES = [STAR_TYPES[i] for i in sorted(STAR_TYPES)]
+PLANET_TYPE_KEYS = [
+    "PlanetBarren",
+    "PlanetArid",
+    "PlanetOcean",
+    "PlanetMolten",
+    "PlanetFrozen",
+    "PlanetContinental",
+    "PlanetGaia",
+    "PlanetSuperDimensional",
+]
+
+SETTINGS_PATH = Path(__file__).resolve().parent / "local_settings.json"
+DEFAULT_SETTINGS = {
+    "theme": "light",
+    "threads": 8,
 }
 
 
@@ -347,6 +365,40 @@ class UniverseService:
         self._preload_thread: Optional[threading.Thread] = None
         self._preload_rows_done = 0
         self._preload_rows_total = UNIVERSE_SIZE
+        self._preload_logs: List[str] = []
+        self._active_workers = 0
+        self.settings = self._load_local_settings()
+
+    def _load_local_settings(self) -> Dict[str, object]:
+        settings = dict(DEFAULT_SETTINGS)
+        if SETTINGS_PATH.exists():
+            try:
+                loaded = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    settings.update(loaded)
+            except Exception as exc:
+                print(f"[PlanetInfo] 读取本地配置失败: {exc}")
+        settings["threads"] = max(1, min(64, int(settings.get("threads", 8))))
+        settings["theme"] = "dark" if settings.get("theme") == "dark" else "light"
+        return settings
+
+    def update_settings(self, patch: Dict[str, object]) -> Dict[str, object]:
+        updated = dict(self.settings)
+        if "theme" in patch:
+            updated["theme"] = "dark" if patch["theme"] == "dark" else "light"
+        if "threads" in patch:
+            updated["threads"] = max(1, min(64, int(patch["threads"])))
+        SETTINGS_PATH.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.settings = updated
+        return dict(self.settings)
+
+    def _append_log(self, message: str) -> None:
+        ts = time.strftime("%H:%M:%S")
+        line = f"[{ts}] {message}"
+        print(f"[PlanetInfo] {line}")
+        self._preload_logs.append(line)
+        if len(self._preload_logs) > 200:
+            self._preload_logs = self._preload_logs[-200:]
 
     def ensure_preload_started(self) -> None:
         with self._preload_lock:
@@ -366,84 +418,89 @@ class UniverseService:
             "progress_percent": progress,
             "rows_done": self._preload_rows_done,
             "rows_total": self._preload_rows_total,
+            "active_workers": self._active_workers,
+            "target_workers": int(self.settings.get("threads", 8)),
             "galaxy_count": len(self.galaxies),
             "system_count": len(self.systems),
             "planet_count": len(self.planets_by_key),
             "preload_seconds": round(self.preload_seconds, 2),
+            "logs": self._preload_logs[-12:],
         }
 
-    @staticmethod
-    def _scan_galaxy_rows(
-        gy_start: int, gy_end: int
-    ) -> Tuple[int, Dict[Tuple[int, int], Dict[str, object]], Dict[Tuple[int, int, int, int], Dict[str, object]], Dict[str, PlanetRecord]]:
-        chunk_galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
-        chunk_systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
-        chunk_planets: Dict[str, PlanetRecord] = {}
+    def _native_loader_paths(self) -> Tuple[Path, Path]:
+        base_dir = Path(__file__).resolve().parent
+        return base_dir / "native_loader.cpp", base_dir / ".native_loader.bin"
 
-        for gy in range(gy_start, gy_end):
-            for gx in range(UNIVERSE_SIZE):
-                if not is_galaxy((gx, gy)):
-                    continue
-                gkey = (gx, gy)
-                chunk_galaxies[gkey] = {
+    def _build_native_loader(self) -> Path:
+        src, bin_path = self._native_loader_paths()
+        need_rebuild = (not bin_path.exists()) or (bin_path.stat().st_mtime < src.stat().st_mtime)
+        if need_rebuild:
+            cmd = ["g++", "-std=c++20", "-O3", "-pthread", str(src), "-o", str(bin_path)]
+            self._append_log("编译 C++ 预加载器...")
+            subprocess.run(cmd, check=True)
+        return bin_path
+
+    def _load_from_native_file(self, path: Path) -> None:
+        section = None
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("["):
+                section = line
+                continue
+            items = [int(x) for x in line.split(",")]
+            if section == "[GAL]":
+                gx, gy = items
+                self.galaxies[(gx, gy)] = {
                     "x": gx,
                     "y": gy,
                     "system_keys": [],
                     "planet_count": 0,
                     "star_type_counter": Counter(),
                 }
-
-                for sy in range(GALAXY_SIZE):
-                    for sx in range(GALAXY_SIZE):
-                        if not is_star_system((gx, gy), (sx, sy)):
-                            continue
-                        ss_map_key = build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])
-                        star_type = calculate_star_type(ss_map_key)
-
-                        skey = (gx, gy, sx, sy)
-                        chunk_galaxies[gkey]["system_keys"].append(skey)
-                        chunk_galaxies[gkey]["star_type_counter"][star_type] += 1
-
-                        chunk_systems[skey] = {
-                            "gx": gx,
-                            "gy": gy,
-                            "sx": sx,
-                            "sy": sy,
-                            "star_type": star_type,
-                            "planet_keys": [],
-                            "planet_count": 0,
-                            "planet_type_counter": Counter(),
-                        }
-
-                        ss_hash_i = csharp_int32(HashUtility.hash_string(ss_map_key))
-                        main_star, second_star = _star_positions(ss_map_key)
-
-                        for py in range(STAR_SYSTEM_SIZE):
-                            for px in range(STAR_SYSTEM_SIZE):
-                                is_star_tile = (px, py) == main_star or (second_star is not None and (px, py) == second_star)
-                                tile_hash = HashUtility.hash_tile(px, py, STAR_SYSTEM_SIZE, STAR_SYSTEM_SIZE, ss_hash_i)
-                                h = HashUtility.hash_uint(tile_hash)
-
-                                if is_star_tile:
-                                    continue
-                                h = HashUtility.hash_uint(h)
-                                if h % 50 != 0:
-                                    continue
-                                h = HashUtility.hash_uint(h)
-                                if h % 2 != 0:
-                                    continue
-
-                                try:
-                                    p = compute_planet_record_fast(gx, gy, sx, sy, px, py, star_type, tile_hash)
-                                except ValueError:
-                                    continue
-                                chunk_planets[p.map_key] = p
-                                chunk_systems[skey]["planet_keys"].append(p.map_key)
-                                chunk_systems[skey]["planet_count"] += 1
-                                chunk_systems[skey]["planet_type_counter"][p.planet_type] += 1
-                                chunk_galaxies[gkey]["planet_count"] += 1
-
-        return gy_end - gy_start, chunk_galaxies, chunk_systems, chunk_planets
+            elif section == "[SYS]":
+                gx, gy, sx, sy, star_type_idx = items
+                skey = (gx, gy, sx, sy)
+                self.systems[skey] = {
+                    "gx": gx,
+                    "gy": gy,
+                    "sx": sx,
+                    "sy": sy,
+                    "star_type": STAR_TYPE_NAMES[star_type_idx],
+                    "planet_keys": [],
+                    "planet_count": 0,
+                    "planet_type_counter": Counter(),
+                }
+                self.galaxies[(gx, gy)]["system_keys"].append(skey)
+                self.galaxies[(gx, gy)]["star_type_counter"][STAR_TYPE_NAMES[star_type_idx]] += 1
+            elif section == "[PLN]":
+                gx, gy, sx, sy, px, py, star_type_idx, planet_type_idx, sec_day, days_month, days_year, month_year, p_size, density = items
+                planet_type_key = PLANET_TYPE_KEYS[planet_type_idx]
+                map_key = build_map_key("MapOfPlanet", [(gx, gy), (sx, sy), (px, py)])
+                p = PlanetRecord(
+                    map_key=map_key,
+                    galaxy_x=gx,
+                    galaxy_y=gy,
+                    star_system_x=sx,
+                    star_system_y=sy,
+                    planet_x=px,
+                    planet_y=py,
+                    star_type=STAR_TYPE_NAMES[star_type_idx],
+                    planet_type=PLANET_TYPES[planet_type_key],
+                    seconds_for_a_day=sec_day,
+                    days_for_a_month=days_month,
+                    days_for_a_year=days_year,
+                    month_for_a_year=month_year,
+                    planet_size=p_size,
+                    mineral_density=density,
+                )
+                self.planets_by_key[map_key] = p
+                skey = (gx, gy, sx, sy)
+                self.systems[skey]["planet_keys"].append(map_key)
+                self.systems[skey]["planet_count"] += 1
+                self.systems[skey]["planet_type_counter"][p.planet_type] += 1
+                self.galaxies[(gx, gy)]["planet_count"] += 1
 
     def preload_all(self) -> None:
         wait_thread: Optional[threading.Thread] = None
@@ -462,37 +519,45 @@ class UniverseService:
 
         start = time.time()
         self._preload_rows_done = 0
-        print("[PlanetInfo] 开始预加载宇宙数据...")
+        self._preload_logs = []
+        self._append_log("开始预加载宇宙数据（C++ 多线程）")
+        self._active_workers = int(self.settings.get("threads", 8))
 
-        cpu = os.cpu_count() or 4
-        workers = max(2, min(8, cpu))
-        chunk_size = 2
-        row_ranges = [(gy, min(UNIVERSE_SIZE, gy + chunk_size)) for gy in range(0, UNIVERSE_SIZE, chunk_size)]
+        try:
+            loader = self._build_native_loader()
+            output_path = Path(__file__).resolve().parent / ".native_loader.out"
+            cmd = [str(loader), str(output_path), str(self._active_workers)]
+            self._append_log(f"启动原生扫描器，线程数={self._active_workers}")
+            process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            assert process.stdout is not None
+            for raw_line in process.stdout:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                if line.startswith("PROGRESS"):
+                    _, done, total, lg, ls, lp = line.split("	")
+                    self._preload_rows_done = int(done)
+                    self._preload_rows_total = int(total)
+                    self._append_log(f"扫描行 {done}/{total} | 本地累计: 星系{lg} 恒星系{ls} 行星{lp}")
+                elif line.startswith("DONE"):
+                    _, lg, ls, lp, ms = line.split("	")
+                    self._append_log(f"扫描完成: 星系{lg} 恒星系{ls} 行星{lp} (原生阶段 {int(ms)/1000:.2f}s)")
+                else:
+                    self._append_log(f"native> {line}")
+            code = process.wait()
+            if code != 0:
+                raise RuntimeError(f"native loader 退出码 {code}")
 
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {executor.submit(self._scan_galaxy_rows, gy0, gy1): (gy0, gy1) for gy0, gy1 in row_ranges}
-            for future in as_completed(future_map):
-                rows_done, row_galaxies, row_systems, row_planets = future.result()
-                self.galaxies.update(row_galaxies)
-                self.systems.update(row_systems)
-                self.planets_by_key.update(row_planets)
-                self._preload_rows_done += rows_done
-
-                if self._preload_rows_done % 10 == 0 or self._preload_rows_done >= UNIVERSE_SIZE:
-                    pct = int(self._preload_rows_done * 100 / UNIVERSE_SIZE)
-                    print(
-                        f"[PlanetInfo] 预加载进度: {self._preload_rows_done}/{UNIVERSE_SIZE} ({pct}%), "
-                        f"星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}"
-                    )
-
-        self.preloaded = True
-        self.preloading = False
-        self._preload_thread = None
-        self.preload_seconds = time.time() - start
-        print(
-            f"[PlanetInfo] 预加载完成: 星系={len(self.galaxies)}, 恒星系={len(self.systems)}, "
-            f"行星={len(self.planets_by_key)}, 耗时={self.preload_seconds:.2f}s"
-        )
+            self._load_from_native_file(output_path)
+            self.preloaded = True
+            self.preload_seconds = time.time() - start
+            self._append_log(
+                f"预加载完成: 星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}, 耗时={self.preload_seconds:.2f}s"
+            )
+        finally:
+            self.preloading = False
+            self._active_workers = 0
+            self._preload_thread = None
 
     @staticmethod
     def _sort_rows(rows: List[Dict[str, object]], key: str, desc: bool) -> List[Dict[str, object]]:
@@ -673,9 +738,14 @@ HTML = """<!doctype html>
     .app.hidden { display:none; }
     .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border:1px solid var(--line); border-radius:12px; background:rgba(28,28,28,.95); }
     .brand { font-size:14px; color:var(--sub); letter-spacing:.04em; font-weight:700; }
-    .tabs { display:flex; gap:8px; }
+    .tabs { display:flex; gap:8px; align-items:center; }
     .tab-btn { border:1px solid #5a5a5a; border-radius:10px; background:#2a2a2a; color:#d8d8d8; padding:8px 12px; cursor:pointer; }
     .tab-btn.active { border-color:#8a8a8a; background:#3a3a3a; color:#fff; }
+    .settings-panel { display:none; position:absolute; right:18px; top:66px; min-width:260px; border:1px solid var(--line); border-radius:12px; background:var(--panel); padding:12px; z-index:30; }
+    .settings-panel.open { display:block; }
+    .settings-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:8px; }
+    .log-box { margin-top:10px; max-height:120px; overflow:auto; font-family:Consolas,monospace; font-size:11px; line-height:1.4; border:1px solid var(--line); border-radius:8px; padding:8px; background:rgba(12,12,12,.35); }
+    body[data-theme="light"] { --bg:#f4f6fb; --panel:#ffffff; --line:#d2d9e8; --txt:#1f2937; --sub:#4b5563; }
     .view { display:none; min-height:0; flex:1; }
     .view.active { display:grid; }
     .view.nav-view { --nav-width:340px; grid-template-columns:minmax(300px, var(--nav-width)) 10px minmax(0,1fr); gap:0; align-items:stretch; }
@@ -733,6 +803,7 @@ HTML = """<!doctype html>
     <h2 class="loading-title">加载中</h2>
     <div id="loadingStats" class="hint" style="margin-bottom:8px">正在构建宇宙索引...</div>
     <div class="progress"><div id="loadingBar" class="bar"></div></div>
+    <div id="loadingLogs" class="log-box">等待日志...</div>
   </div>
 </div>
 
@@ -742,8 +813,24 @@ HTML = """<!doctype html>
     <div class="tabs">
       <button id="tabNav" class="tab-btn active">导航检索</button>
       <button id="tabRank" class="tab-btn">恒星系排行</button>
+      <button id="settingsBtn" class="tab-btn"><i class="bi bi-gear"></i> 设置</button>
     </div>
   </header>
+  <div id="settingsPanel" class="settings-panel">
+    <div class="settings-row">
+      <span class="hint">主题</span>
+      <fluent-select id="themeSelect" style="width:140px">
+        <fluent-option value="light">Light</fluent-option>
+        <fluent-option value="dark">Dark</fluent-option>
+      </fluent-select>
+    </div>
+    <div class="settings-row">
+      <span class="hint">加载线程</span>
+      <fluent-text-field id="threadsInput" type="number" value="8" min="1" max="64" style="width:140px"></fluent-text-field>
+    </div>
+    <button id="saveSettingsBtn" class="btn-icon" style="width:100%"><i class="bi bi-save"></i> 保存到本地</button>
+    <div class="hint" style="margin-top:6px">设置会保存到 PlanetInfo/local_settings.json</div>
+  </div>
 
   <section id="navView" class="view nav-view active">
     <aside class="panel nav-pane nav-side">
@@ -820,6 +907,12 @@ const rankHoverPanel = document.getElementById('rankHoverPanel');
 const navDivider = document.getElementById('navDivider');
 const searchBlock = document.getElementById('searchBlock');
 const forceReady = new URLSearchParams(window.location.search).get('ready') === '1';
+const loadingLogs = document.getElementById('loadingLogs');
+const settingsBtn = document.getElementById('settingsBtn');
+const settingsPanel = document.getElementById('settingsPanel');
+const themeSelect = document.getElementById('themeSelect');
+const threadsInput = document.getElementById('threadsInput');
+const saveSettingsBtn = document.getElementById('saveSettingsBtn');
 
 let state = {
   tab: 'nav',
@@ -836,6 +929,32 @@ let state = {
     total_pages: 1,
   },
 };
+
+
+function renderLoadingLogs(lines){
+  loadingLogs.innerHTML = (lines || []).map((x)=>`<div>${x}</div>`).join('') || '等待日志...';
+  loadingLogs.scrollTop = loadingLogs.scrollHeight;
+}
+
+function applyTheme(theme){
+  document.body.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+}
+
+async function loadSettings(){
+  const s = await getJson(`${API}/settings`);
+  themeSelect.value = s.theme || 'light';
+  threadsInput.value = String(s.threads || 8);
+  applyTheme(themeSelect.value);
+}
+
+async function saveSettings(){
+  const payload = { theme: themeSelect.value || 'light', threads: Number(threadsInput.value || 8) };
+  const res = await fetch(`${API}/settings`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+  const d = await res.json();
+  themeSelect.value = d.theme;
+  threadsInput.value = String(d.threads);
+  applyTheme(d.theme);
+}
 
 function defaultRankDesc(sortKey){
   return sortKey !== 'avg_mineral_density';
@@ -1156,6 +1275,7 @@ async function jumpBySearch(){
 async function init() {
   bindNavDividerDrag();
   autoFitNavWidth();
+  await loadSettings();
 
   if (!forceReady) {
     const loadingStart = Date.now();
@@ -1165,8 +1285,9 @@ async function init() {
       const status = await getJson(`${API}/preload_status`);
       const pct = status.progress_percent || 0;
       if (status.preloading || !status.ready) sawPreloading = true;
-      loadingStats.textContent = `进度 ${pct}% (${status.rows_done}/${status.rows_total}) · 星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
+      loadingStats.textContent = `进度 ${pct}% (${status.rows_done}/${status.rows_total}) · 线程 ${status.active_workers}/${status.target_workers} · 星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
       loadingBar.style.width = `${Math.max(4, pct)}%`;
+      renderLoadingLogs(status.logs);
       const elapsed = Date.now() - loadingStart;
       const canEnter = status.ready && elapsed >= MIN_LOADING_MS && (sawPreloading || pct >= 100);
       if (canEnter) {
@@ -1271,6 +1392,16 @@ document.getElementById('rankNext').onclick = async ()=>{
   await loadRankings();
 };
 
+
+settingsBtn.onclick = ()=> settingsPanel.classList.toggle('open');
+saveSettingsBtn.onclick = async ()=>{ await saveSettings(); settingsPanel.classList.remove('open'); };
+themeSelect.onchange = ()=> applyTheme(themeSelect.value);
+document.addEventListener('click', (event)=>{
+  if (!settingsPanel.contains(event.target) && !settingsBtn.contains(event.target)) {
+    settingsPanel.classList.remove('open');
+  }
+});
+
 init();
 </script>
 </body>
@@ -1289,24 +1420,45 @@ LOADING_HTML = """<!doctype html>
     * { box-sizing:border-box; }
     body { margin:0; background:var(--bg); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
     .wrap { width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; padding:10px; }
-    .card { width:100%; max-width:460px; border:1px solid var(--line); border-radius:12px; background:rgba(28,28,28,.95); padding:16px; }
+    .card { width:100%; max-width:620px; border:1px solid var(--line); border-radius:12px; background:rgba(28,28,28,.95); padding:16px; }
     .title { color:var(--sub); font-size:16px; margin:0 0 8px; }
     .hint { color:#bdbdbd; font-size:12px; margin-bottom:8px; }
     .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#262626; }
-    .bar { height:100%; width:4%; background:linear-gradient(90deg,#666,#cfcfcf); transition:width .2s ease; }
+    .bar { height:100%; width:4%; background:linear-gradient(90deg,#4f7cff,#7dceff,#d5ecff); transition:width .2s ease; }
+    .seg { display:grid; grid-template-columns:repeat(8,1fr); gap:4px; margin-top:8px; }
+    .seg i { display:block; height:6px; border-radius:6px; background:#2a2a2a; border:1px solid #444; }
+    .seg i.on { background:#72a4ff; }
+    .log { margin-top:10px; max-height:170px; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:8px; font-family:Consolas,monospace; font-size:11px; background:#171717; }
   </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
-    <h3 class="title">加载中</h3>
+    <h3 class="title">加载中（Native C++ Worker）</h3>
     <div id="loadingStats" class="hint">正在构建宇宙索引...</div>
     <div class="progress"><div id="loadingBar" class="bar"></div></div>
+    <div id="threadSeg" class="seg"></div>
+    <div id="loadingLogs" class="log">等待日志...</div>
   </div>
 </div>
 <script>
 const stats = document.getElementById('loadingStats');
 const bar = document.getElementById('loadingBar');
+const logs = document.getElementById('loadingLogs');
+const seg = document.getElementById('threadSeg');
+function renderThreads(active, target){
+  seg.innerHTML = '';
+  const total = Math.max(1, target || 8);
+  for (let i = 0; i < total; i++) {
+    const el = document.createElement('i');
+    if (i < (active || 0)) el.classList.add('on');
+    seg.appendChild(el);
+  }
+}
+function renderLogs(lines){
+  logs.innerHTML = (lines || []).map((x)=>`<div>${x}</div>`).join('') || '等待日志...';
+  logs.scrollTop = logs.scrollHeight;
+}
 async function poll(){
   try {
     const r = await fetch('/api/preload_status');
@@ -1314,7 +1466,9 @@ async function poll(){
     const d = await r.json();
     const pct = d.progress_percent || 0;
     bar.style.width = `${Math.max(4, pct)}%`;
-    stats.textContent = `进度 ${pct}% (${d.rows_done}/${d.rows_total}) · 星系: ${d.galaxy_count} · 恒星系: ${d.system_count} · 行星: ${d.planet_count}`;
+    stats.textContent = `进度 ${pct}% (${d.rows_done}/${d.rows_total}) · 线程 ${d.active_workers}/${d.target_workers} · 星系:${d.galaxy_count} 恒星系:${d.system_count} 行星:${d.planet_count}`;
+    renderThreads(d.active_workers, d.target_workers);
+    renderLogs(d.logs);
   } catch (e) {
     stats.textContent = '正在连接本地服务...';
   }
@@ -1325,6 +1479,7 @@ poll();
 </body>
 </html>
 """
+
 
 
 class AppHTTP(BaseHTTPRequestHandler):
@@ -1366,6 +1521,9 @@ class AppHTTP(BaseHTTPRequestHandler):
                 return
             if path == "/api/app_info":
                 self._json(self.service.app_info())
+                return
+            if path == "/api/settings":
+                self._json(self.service.settings)
                 return
             if path == "/api/galaxies":
                 self._json(
@@ -1424,6 +1582,21 @@ class AppHTTP(BaseHTTPRequestHandler):
         except Exception as e:
             self._json({"error": str(e)}, status=400)
 
+
+    def do_POST(self) -> None:  # noqa: N802
+        path, _, _ = self.path.partition("?")
+        try:
+            if path != "/api/settings":
+                self._json({"error": "not found"}, status=404)
+                return
+            content_length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be object")
+            self._json(self.service.update_settings(payload))
+        except Exception as e:
+            self._json({"error": str(e)}, status=400)
 
 def run_server(port: int = 8765) -> ThreadingHTTPServer:
     verify_samples()
