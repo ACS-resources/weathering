@@ -251,15 +251,38 @@ def verify_samples() -> None:
 class UniverseService:
     def __init__(self) -> None:
         self.preloaded = False
+        self.preloading = False
         self.preload_seconds = 0.0
         self.planets_by_key: Dict[str, PlanetRecord] = {}
         self.galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
         self.systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
+        self._preload_lock = threading.Lock()
+        self._preload_thread: Optional[threading.Thread] = None
+
+    def ensure_preload_started(self) -> None:
+        with self._preload_lock:
+            if self.preloaded or self.preloading:
+                return
+            self.preloading = True
+            self._preload_thread = threading.Thread(target=self.preload_all, daemon=True)
+            self._preload_thread.start()
+
+    def preload_status(self) -> Dict[str, object]:
+        return {
+            "ready": self.preloaded,
+            "preloading": self.preloading,
+            "galaxy_count": len(self.galaxies),
+            "system_count": len(self.systems),
+            "planet_count": len(self.planets_by_key),
+            "preload_seconds": round(self.preload_seconds, 2),
+        }
 
     def preload_all(self) -> None:
-        if self.preloaded:
-            return
+        with self._preload_lock:
+            if self.preloaded:
+                return
         start = time.time()
+        print("[PlanetInfo] 开始预加载宇宙数据...")
 
         for gy in range(UNIVERSE_SIZE):
             for gx in range(UNIVERSE_SIZE):
@@ -325,8 +348,19 @@ class UniverseService:
                                 self.systems[skey]["planet_type_counter"][p.planet_type] += 1
                                 self.galaxies[gkey]["planet_count"] += 1
 
+            if gy % 10 == 0:
+                print(
+                    f"[PlanetInfo] 预加载进度: y={gy:02d}/{UNIVERSE_SIZE - 1}, "
+                    f"星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}"
+                )
+
         self.preloaded = True
+        self.preloading = False
         self.preload_seconds = time.time() - start
+        print(
+            f"[PlanetInfo] 预加载完成: 星系={len(self.galaxies)}, 恒星系={len(self.systems)}, "
+            f"行星={len(self.planets_by_key)}, 耗时={self.preload_seconds:.2f}s"
+        )
 
     @staticmethod
     def _sort_rows(rows: List[Dict[str, object]], key: str, desc: bool) -> List[Dict[str, object]]:
@@ -334,7 +368,11 @@ class UniverseService:
             return rows
         if key not in rows[0]:
             key = "x"
-        return sorted(rows, key=lambda r: r[key], reverse=desc)
+        if key == "x" and "y" in rows[0]:
+            return sorted(rows, key=lambda r: (r["x"], r["y"]), reverse=desc)
+        if key == "y" and "x" in rows[0]:
+            return sorted(rows, key=lambda r: (r["y"], r["x"]), reverse=desc)
+        return sorted(rows, key=lambda r: (r[key], r.get("x", 0), r.get("y", 0)), reverse=desc)
 
     def list_galaxies(self, sort_key: str = "x", desc: bool = False, search: str = "") -> List[Dict[str, object]]:
         self.preload_all()
@@ -425,49 +463,65 @@ HTML = """<!doctype html>
   <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css\">
   <script type=\"module\" src=\"https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js\"></script>
   <style>
-    :root { --bg:#0b1220; --panel:#111827; --line:#334155; --txt:#e2e8f0; --sub:#93c5fd; }
-    body { margin:0; background:var(--bg); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
-    .app { display:grid; grid-template-columns: 420px 1fr; height:100vh; }
-    .left { border-right:1px solid var(--line); overflow:auto; padding:10px; background:#0f172a; }
-    .right { overflow:auto; padding:10px; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:10px; }
-    .title { color:var(--sub); margin:0 0 8px; font-size:16px; font-weight:700; }
-    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .node { padding:8px 10px; border-radius:8px; border:1px solid #263244; margin-bottom:6px; cursor:pointer; }
-    .node:hover { background:#1e293b; }
-    .hint { color:#93a4bb; font-size:12px; }
-    .kv { margin:6px 0; }
-    .pill { display:inline-block; margin:3px 6px 3px 0; padding:4px 8px; border:1px solid var(--line); border-radius:999px; background:#1e293b; }
-    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#162338; color:var(--txt); padding:6px 8px; cursor:pointer; }
-    .btn-icon:hover { background:#26364d; }
+    :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; --accent:#54a3ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:radial-gradient(circle at 10% 10%, #15284c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
+    .loading-overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#020617,#071025); z-index:99; }
+    .loading-card { width:min(760px,90vw); background:rgba(15,26,48,.92); border:1px solid var(--line); border-radius:16px; padding:26px; box-shadow:0 20px 70px rgba(0,0,0,.35); }
+    .loading-title { margin:0 0 10px; color:var(--sub); font-size:22px; letter-spacing:.08em; text-transform:uppercase; }
+    .loading-sub { margin:0 0 14px; color:#b4d8ff; }
+    .progress { height:12px; width:100%; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#0b1326; }
+    .bar { height:100%; width:2%; background:linear-gradient(90deg,#3b82f6,#60a5fa,#93c5fd); animation:pulse 1.4s infinite alternate; }
+    @keyframes pulse { from { filter:brightness(.7); } to { filter:brightness(1.15); } }
+    .app { display:grid; grid-template-columns: 460px 1fr; height:100vh; padding:14px; gap:14px; }
+    .panel { overflow:auto; padding:14px; background:rgba(15,26,48,.9); border:1px solid var(--line); border-radius:14px; }
+    .title { color:var(--sub); margin:0 0 12px; font-size:16px; font-weight:700; letter-spacing:.04em; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
+    .node { padding:11px 12px; border-radius:10px; border:1px solid #2a4068; margin-bottom:8px; cursor:pointer; background:#0e1930; transition:.18s ease; }
+    .node:hover { background:#142548; border-color:#3f6bad; transform:translateY(-1px); }
+    .hint { color:#9bb6dd; font-size:12px; }
+    .kv { margin:9px 0; line-height:1.5; }
+    .pill { display:inline-block; margin:4px 6px 4px 0; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#132748; }
+    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#132746; color:var(--txt); padding:7px 10px; cursor:pointer; }
+    .btn-icon:hover { background:#1b3763; }
+    .app.hidden { display:none; }
   </style>
 </head>
 <body>
-<div class=\"app\">
-  <aside class=\"left\">
-    <div class=\"card\">
+<div id=\"loadingOverlay\" class=\"loading-overlay\">
+  <div class=\"loading-card\">
+    <h2 class=\"loading-title\">Weathering Universe Initialization</h2>
+    <p id=\"loadingText\" class=\"loading-sub\">形式化流程正在进行：准备读取全部星球数据并建立索引...</p>
+    <div class=\"progress\"><div id=\"loadingBar\" class=\"bar\"></div></div>
+    <p id=\"loadingStats\" class=\"hint\" style=\"margin-top:10px\">等待后端启动...</p>
+  </div>
+</div>
+
+<div id=\"app\" class=\"app hidden\">
+  <aside class=\"panel\">
+    <div>
       <h3 class=\"title\">导航</h3>
-      <div class=\"row\" style=\"margin-bottom:8px\">
+      <div class=\"row\">
         <button id=\"backBtn\" class=\"btn-icon\"><i class=\"bi bi-arrow-left-circle\"></i> 返回</button>
         <span id=\"breadcrumb\" class=\"hint\">宇宙 / 星系列表</span>
       </div>
 
-      <div id=\"searchBlock\" class=\"row\" style=\"margin-bottom:8px\">
-        <fluent-text-field id=\"coordSearch\" placeholder=\"输入 x,y 直接进入\" style=\"width:220px\"></fluent-text-field>
+      <div id=\"searchBlock\" class=\"row\">
+        <fluent-text-field id=\"coordSearch\" placeholder=\"输入 x,y 直接进入当前层级\" style=\"width:280px\"></fluent-text-field>
         <button id=\"searchBtn\" class=\"btn-icon\"><i class=\"bi bi-search\"></i></button>
       </div>
 
-      <div class=\"row\" style=\"margin-bottom:8px\">
+      <div class=\"row\">
         <fluent-select id=\"sortKey\" style=\"width:180px\"></fluent-select>
-        <button id=\"sortDirBtn\" class=\"btn-icon\" title=\"切换升降序\"><i id=\"sortDirIcon\" class=\"bi bi-sort-down\"></i></button>
+        <button id=\"sortDirBtn\" class=\"btn-icon\" title=\"切换升降序\"><i id=\"sortDirIcon\" class=\"bi bi-sort-down-alt\"></i></button>
       </div>
 
       <div id=\"list\"></div>
     </div>
   </aside>
 
-  <main class=\"right\">
-    <div class=\"card\">
+  <main class=\"panel\">
+    <div>
       <h3 class=\"title\">具体信息</h3>
       <div id=\"info\" class=\"hint\">启动中：正在加载全部星球数据...</div>
     </div>
@@ -476,6 +530,9 @@ HTML = """<!doctype html>
 
 <script>
 const API = '/api';
+const appRoot = document.getElementById('app');
+const loadingOverlay = document.getElementById('loadingOverlay');
+const loadingStats = document.getElementById('loadingStats');
 const info = document.getElementById('info');
 const list = document.getElementById('list');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -505,6 +562,15 @@ function setSortOptions(level){
   }
   if (!keys.includes(state.sort_key)) state.sort_key = keys[0];
   sortKey.value = state.sort_key;
+}
+
+function parseCoordInput(raw){
+  const parts = raw.split(',').map(v => v.trim());
+  if (parts.length !== 2) return null;
+  const x = Number(parts[0]);
+  const y = Number(parts[1]);
+  if (!Number.isInteger(x) || !Number.isInteger(y)) return null;
+  return {x, y};
 }
 
 function renderInfo(data){
@@ -608,10 +674,74 @@ async function loadList(search=''){
   }
 }
 
-async function init() {
-  const app = await getJson(`${API}/app_info`);
-  info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
+async function jumpBySearch(){
+  const search = document.getElementById('coordSearch').value.trim();
+  if (!search) {
+    await loadList('');
+    return;
+  }
+  const c = parseCoordInput(search);
+  if (!c) {
+    list.innerHTML = '<div class="hint">请输入合法坐标，例如 12,34</div>';
+    return;
+  }
 
+  if (state.level === 'galaxy') {
+    const r = await getJson(`${API}/galaxies?search=${encodeURIComponent(search)}`);
+    if (!r.length) {
+      list.innerHTML = '<div class="hint">未找到该星系</div>';
+      return;
+    }
+    state.level = 'system';
+    state.gx = c.x; state.gy = c.y;
+    state.sort_key = 'x';
+    state.desc = false;
+    sortDirIcon.className = 'bi bi-sort-down-alt';
+    setSortOptions('system');
+    renderInfo(await getJson(`${API}/galaxy_info?gx=${c.x}&gy=${c.y}`));
+    await loadList('');
+    return;
+  }
+
+  if (state.level === 'system') {
+    const r = await getJson(`${API}/systems?gx=${state.gx}&gy=${state.gy}&search=${encodeURIComponent(search)}`);
+    if (!r.length) {
+      list.innerHTML = '<div class="hint">未找到该恒星系</div>';
+      return;
+    }
+    state.level = 'planet';
+    state.sx = c.x; state.sy = c.y;
+    state.sort_key = 'planet_x';
+    state.desc = false;
+    sortDirIcon.className = 'bi bi-sort-down-alt';
+    setSortOptions('planet');
+    renderInfo(await getJson(`${API}/system_info?gx=${state.gx}&gy=${state.gy}&sx=${c.x}&sy=${c.y}`));
+    await loadList('');
+    return;
+  }
+
+  await loadList('');
+}
+
+async function waitForPreload(){
+  let frame = 0;
+  while (true) {
+    const status = await getJson(`${API}/preload_status`);
+    loadingStats.textContent = `星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
+    frame = (frame + 1) % 100;
+    document.getElementById('loadingBar').style.width = `${Math.max(3, frame)}%`;
+    if (status.ready) {
+      loadingOverlay.style.display = 'none';
+      appRoot.classList.remove('hidden');
+      info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}<br>加载耗时: ${status.preload_seconds}s`;
+      return;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+
+async function init() {
+  await waitForPreload();
   setSortOptions('galaxy');
   await loadList('');
 }
@@ -623,13 +753,19 @@ document.getElementById('sortKey').onchange = async (e)=>{
 
 document.getElementById('sortDirBtn').onclick = async ()=>{
   state.desc = !state.desc;
-  sortDirIcon.className = state.desc ? 'bi bi-sort-down' : 'bi bi-sort-up';
+  sortDirIcon.className = state.desc ? 'bi bi-sort-up-alt' : 'bi bi-sort-down-alt';
   await loadList(document.getElementById('coordSearch').value.trim());
 };
 
 document.getElementById('searchBtn').onclick = async ()=>{
-  await loadList(document.getElementById('coordSearch').value.trim());
+  await jumpBySearch();
 };
+
+document.getElementById('coordSearch').addEventListener('keydown', async (event)=>{
+  if (event.key === 'Enter') {
+    await jumpBySearch();
+  }
+});
 
 document.getElementById('backBtn').onclick = async ()=>{
   if (state.level === 'planet') {
@@ -646,7 +782,7 @@ document.getElementById('backBtn').onclick = async ()=>{
     info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
   }
   state.desc = false;
-  sortDirIcon.className = 'bi bi-sort-up';
+  sortDirIcon.className = 'bi bi-sort-down-alt';
   await loadList('');
 };
 
@@ -683,7 +819,11 @@ class AppHTTP(BaseHTTPRequestHandler):
 
         try:
             if path == "/":
+                self.service.ensure_preload_started()
                 self._html(HTML)
+                return
+            if path == "/api/preload_status":
+                self._json(self.service.preload_status())
                 return
             if path == "/api/app_info":
                 self._json(self.service.app_info())
@@ -736,7 +876,7 @@ class AppHTTP(BaseHTTPRequestHandler):
 
 def run_server(port: int = 8765) -> ThreadingHTTPServer:
     verify_samples()
-    AppHTTP.service.preload_all()
+    AppHTTP.service.ensure_preload_started()
     server = ThreadingHTTPServer(("127.0.0.1", port), AppHTTP)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
@@ -766,7 +906,9 @@ def run_app() -> None:
 if __name__ == "__main__":
     if not os.environ.get("DISPLAY") and os.name != "nt":
         verify_samples()
-        AppHTTP.service.preload_all()
+        AppHTTP.service.ensure_preload_started()
+        while not AppHTTP.service.preloaded:
+            time.sleep(0.2)
         print("验证通过（当前无图形环境，已预加载全部数据，跳过 Edge WebView 启动）")
     else:
         run_app()
