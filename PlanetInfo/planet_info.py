@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, unquote
+from urllib.request import urlopen
 
 MASK32 = 0xFFFFFFFF
 UNIVERSE_SIZE = 100
@@ -1256,6 +1257,55 @@ init();
 """
 
 
+LOADING_HTML = """<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Weathering PlanetInfo Loading</title>
+  <style>
+    :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
+    .wrap { width:100vw; height:100vh; display:flex; align-items:center; justify-content:center; padding:10px; }
+    .card { width:100%; max-width:460px; border:1px solid var(--line); border-radius:12px; background:rgba(15,26,48,.95); padding:16px; }
+    .title { color:var(--sub); font-size:16px; margin:0 0 8px; }
+    .hint { color:#9bb6dd; font-size:12px; margin-bottom:8px; }
+    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#0b1326; }
+    .bar { height:100%; width:4%; background:linear-gradient(90deg,#3b82f6,#93c5fd); transition:width .2s ease; }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h3 class="title">加载中</h3>
+    <div id="loadingStats" class="hint">正在构建宇宙索引...</div>
+    <div class="progress"><div id="loadingBar" class="bar"></div></div>
+  </div>
+</div>
+<script>
+const stats = document.getElementById('loadingStats');
+const bar = document.getElementById('loadingBar');
+async function poll(){
+  try {
+    const r = await fetch('/api/preload_status');
+    if (!r.ok) throw new Error('status not ok');
+    const d = await r.json();
+    const pct = d.progress_percent || 0;
+    bar.style.width = `${Math.max(4, pct)}%`;
+    stats.textContent = `进度 ${pct}% (${d.rows_done}/${d.rows_total}) · 星系: ${d.galaxy_count} · 恒星系: ${d.system_count} · 行星: ${d.planet_count}`;
+  } catch (e) {
+    stats.textContent = '正在连接本地服务...';
+  }
+}
+setInterval(poll, 250);
+poll();
+</script>
+</body>
+</html>
+"""
+
+
 class AppHTTP(BaseHTTPRequestHandler):
     service = UniverseService()
 
@@ -1284,6 +1334,10 @@ class AppHTTP(BaseHTTPRequestHandler):
             if path == "/":
                 self.service.ensure_preload_started()
                 self._html(HTML)
+                return
+            if path == "/loading":
+                self.service.ensure_preload_started()
+                self._html(LOADING_HTML)
                 return
             if path == "/api/preload_status":
                 self.service.ensure_preload_started()
@@ -1352,7 +1406,7 @@ class AppHTTP(BaseHTTPRequestHandler):
 
 def run_server(port: int = 8765) -> ThreadingHTTPServer:
     verify_samples()
-    server = ThreadingHTTPServer(("127.0.0.1", port), AppHTTP)
+    server = ThreadingHTTPServer(("0.0.0.0", port), AppHTTP)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     return server
@@ -1394,7 +1448,7 @@ def run_app() -> None:
     try:
         import webview
     except Exception:
-        print("验证通过，且已预加载全部数据。未安装 pywebview；可直接打开 http://127.0.0.1:8765")
+        print("验证通过，且已预加载全部数据。未安装 pywebview；可直接打开 http://localhost:8765")
         try:
             while True:
                 threading.Event().wait(3600)
@@ -1403,15 +1457,20 @@ def run_app() -> None:
         return
 
     icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Assets", "Sprites", "Sprites", "icon.png"))
-    loading_html = """
-    <!doctype html><html lang='zh-CN'><head><meta charset='utf-8' />
-    <style>
-      body { margin:0; background:#071025; color:#e8f0ff; font-family:Segoe UI,system-ui,sans-serif; }
-      .card { margin:14px; padding:16px; border-radius:12px; border:1px solid #24385a; background:#0f1a30; }
-      .title { color:#8dc6ff; margin:0 0 8px; font-size:16px; }
-      .hint { color:#9bb6dd; font-size:12px; }
-    </style></head><body><div class='card'><h3 class='title'>加载中</h3><div class='hint'>正在构建宇宙索引，请稍候…</div></div></body></html>
-    """
+    base_url = "http://localhost:8765"
+
+    def wait_http_ready(timeout_seconds: float = 8.0) -> None:
+        deadline = time.time() + timeout_seconds
+        last_error = None
+        while time.time() < deadline:
+            try:
+                with urlopen(f"{base_url}/api/preload_status", timeout=0.8) as resp:
+                    if resp.status == 200:
+                        return
+            except Exception as exc:
+                last_error = exc
+                time.sleep(0.12)
+        raise RuntimeError(f"PlanetInfo 本地服务启动失败：{last_error}")
 
     loading_window = None
 
@@ -1430,7 +1489,7 @@ def run_app() -> None:
             create_window_compat(
                 webview,
                 "Weathering PlanetInfo",
-                "http://127.0.0.1:8765?ready=1",
+                f"{base_url}/?ready=1",
                 width=1220,
                 height=780,
                 resizable=True,
@@ -1440,10 +1499,11 @@ def run_app() -> None:
         open_main_window()
 
     try:
+        wait_http_ready()
         loading_window = create_window_compat(
             webview,
             "Weathering PlanetInfo",
-            html=loading_html,
+            f"{base_url}/loading",
             width=520,
             height=220,
             resizable=False,
