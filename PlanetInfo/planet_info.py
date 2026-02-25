@@ -939,6 +939,24 @@ class WindowApi:
         self._get_window().destroy()
 
 
+def create_window_compat(webview_module, *args, **kwargs):
+    """兼容不同 pywebview 版本的 create_window 参数。"""
+    options = dict(kwargs)
+    while True:
+        try:
+            return webview_module.create_window(*args, **options)
+        except TypeError as exc:
+            msg = str(exc)
+            token = "unexpected keyword argument "
+            if token not in msg:
+                raise
+            bad_key = msg.split(token, 1)[1].strip().strip("'\"")
+            if bad_key not in options:
+                raise
+            print(f"[PlanetInfo] 当前 pywebview 不支持参数 '{bad_key}'，已自动降级兼容")
+            options.pop(bad_key)
+
+
 def run_app() -> None:
     server = run_server(8765)
     try:
@@ -966,7 +984,8 @@ def run_app() -> None:
             splash.destroy()
 
         main_api = WindowApi(lambda: main_ref["window"])
-        main_ref["window"] = webview.create_window(
+        main_ref["window"] = create_window_compat(
+            webview,
             "Weathering PlanetInfo",
             "http://127.0.0.1:8765",
             width=1320,
@@ -980,7 +999,8 @@ def run_app() -> None:
 
     try:
         splash_api = WindowApi(lambda: splash_ref["window"])
-        splash_ref["window"] = webview.create_window(
+        splash_ref["window"] = create_window_compat(
+            webview,
             "PlanetInfo Loading",
             html=SPLASH_HTML,
             width=560,
