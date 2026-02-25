@@ -677,13 +677,35 @@ HTML = """<!doctype html>
     .tab-btn.active { border-color:#4f80cb; background:#1a315a; color:#fff; }
     .view { display:none; min-height:0; flex:1; }
     .view.active { display:grid; }
-    .view.nav-view { grid-template-columns:360px 1fr; gap:12px; }
+    .view.nav-view { --nav-width:340px; grid-template-columns:minmax(300px, var(--nav-width)) 10px minmax(0,1fr); gap:0; align-items:stretch; }
     .view.rank-view { grid-template-columns:1fr; gap:12px; }
     .panel { overflow:auto; padding:14px; background:rgba(15,26,48,.9); border:1px solid var(--line); border-radius:14px; }
+    .nav-pane { min-width:0; }
+    .nav-side { border-top-right-radius:0; border-bottom-right-radius:0; border-right-width:0; }
+    .nav-main { border-top-left-radius:0; border-bottom-left-radius:0; border-left-width:0; }
+    .nav-divider {
+      cursor:col-resize;
+      user-select:none;
+      position:relative;
+      background:linear-gradient(180deg, rgba(36,56,90,.9), rgba(18,34,64,.95));
+      border-left:1px solid #355281;
+      border-right:1px solid #1f3558;
+    }
+    .nav-divider::after {
+      content:'';
+      position:absolute;
+      left:50%; top:50%; transform:translate(-50%,-50%);
+      width:3px; height:36px; border-radius:999px;
+      background:#79a8ea;
+      box-shadow:0 0 0 1px rgba(20,43,82,.5);
+    }
+    .nav-divider.dragging::after { background:#a7ccff; }
     .title { color:var(--sub); margin:0 0 12px; font-size:16px; font-weight:700; letter-spacing:.04em; }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
-    .toolbar { display:grid; grid-template-columns: 1fr auto auto auto auto; align-items:center; gap:8px; margin-bottom:10px; }
+    .toolbar { display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap; }
     .toolbar .hint { white-space:nowrap; }
+    .toolbar-select { flex:1 1 120px; min-width:118px; }
+    .toolbar-search { flex:1 1 88px; min-width:88px; }
     .node { padding:11px 12px; border-radius:10px; border:1px solid #2a4068; margin-bottom:8px; cursor:pointer; background:#0e1930; transition:.18s ease; }
     .node:hover { background:#142548; border-color:#3f6bad; transform:translateY(-1px); }
     .rank-node { position:relative; padding-right:20px; }
@@ -721,7 +743,7 @@ HTML = """<!doctype html>
   </header>
 
   <section id="navView" class="view nav-view active">
-    <aside class="panel">
+    <aside class="panel nav-pane nav-side">
       <h3 class="title">导航</h3>
       <div class="row">
         <button id="backBtn" class="btn-icon"><i class="bi bi-arrow-left-circle"></i> 返回</button>
@@ -729,9 +751,9 @@ HTML = """<!doctype html>
       </div>
 
       <div id="searchBlock" class="toolbar">
-        <fluent-text-field id="coordSearch" placeholder="x,y" style="width:130px"></fluent-text-field>
+        <fluent-text-field id="coordSearch" class="toolbar-search" placeholder="x,y"></fluent-text-field>
         <button id="searchBtn" class="btn-icon"><i class="bi bi-search"></i></button>
-        <fluent-select id="sortKey" style="width:140px"></fluent-select>
+        <fluent-select id="sortKey" class="toolbar-select"></fluent-select>
         <button id="sortDirBtn" class="btn-icon" title="切换升降序"><i id="sortDirIcon" class="bi bi-sort-down-alt"></i></button>
         <span id="sortLabel" class="hint">升序</span>
       </div>
@@ -739,7 +761,9 @@ HTML = """<!doctype html>
       <div id="list"></div>
     </aside>
 
-    <main class="panel">
+    <div id="navDivider" class="nav-divider" title="拖拽调整左右面板宽度"></div>
+
+    <main class="panel nav-pane nav-main">
       <h3 class="title">具体信息</h3>
       <div id="info" class="hint">启动中：正在加载全部星球数据...</div>
     </main>
@@ -790,6 +814,8 @@ const rankSortDirIcon = document.getElementById('rankSortDirIcon');
 const rankSortDesc = document.getElementById('rankSortDesc');
 const rankPageInfo = document.getElementById('rankPageInfo');
 const rankHoverPanel = document.getElementById('rankHoverPanel');
+const navDivider = document.getElementById('navDivider');
+const searchBlock = document.getElementById('searchBlock');
 const forceReady = new URLSearchParams(window.location.search).get('ready') === '1';
 
 let state = {
@@ -993,6 +1019,44 @@ function hideRankHoverPanel(){
   rankHoverPanel.style.display = 'none';
 }
 
+function getMinNavWidth(){
+  return Math.max(300, Math.ceil(searchBlock.scrollWidth + 24));
+}
+
+function setNavWidth(px){
+  const rect = navView.getBoundingClientRect();
+  const minWidth = getMinNavWidth();
+  const maxWidth = Math.max(minWidth + 40, Math.floor(rect.width * 0.7));
+  const next = Math.max(minWidth, Math.min(maxWidth, Math.floor(px)));
+  navView.style.setProperty('--nav-width', `${next}px`);
+}
+
+function autoFitNavWidth(){
+  const minWidth = getMinNavWidth();
+  setNavWidth(minWidth);
+}
+
+function bindNavDividerDrag(){
+  let dragging = false;
+  navDivider.addEventListener('mousedown', (event)=>{
+    event.preventDefault();
+    dragging = true;
+    navDivider.classList.add('dragging');
+  });
+  window.addEventListener('mousemove', (event)=>{
+    if (!dragging) return;
+    const rect = navView.getBoundingClientRect();
+    setNavWidth(event.clientX - rect.left);
+  });
+  window.addEventListener('mouseup', ()=>{
+    if (!dragging) return;
+    dragging = false;
+    navDivider.classList.remove('dragging');
+  });
+  navDivider.addEventListener('dblclick', autoFitNavWidth);
+  window.addEventListener('resize', ()=> setNavWidth(parseFloat(getComputedStyle(navView).getPropertyValue('--nav-width')) || 340));
+}
+
 async function loadRankings(){
   hideRankHoverPanel();
   rankList.innerHTML = '<div class="hint">加载排行中...</div>';
@@ -1068,6 +1132,9 @@ async function jumpBySearch(){
 }
 
 async function init() {
+  bindNavDividerDrag();
+  autoFitNavWidth();
+
   if (!forceReady) {
     const loadingStart = Date.now();
     const MIN_LOADING_MS = 1500;
