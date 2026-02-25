@@ -347,6 +347,41 @@ class UniverseService:
         self._preload_thread: Optional[threading.Thread] = None
         self._preload_rows_done = 0
         self._preload_rows_total = UNIVERSE_SIZE
+        self._preload_chunks_done = 0
+        self._preload_chunks_total = 0
+        self._default_threads = 8
+        self._thread_count = self._default_threads
+        self._chunk_size = 2
+        self._theme = "light"
+        self._active_workers = 0
+        self._worker_stats: Dict[str, Dict[str, object]] = {}
+        self._last_log_time = 0.0
+
+    def get_settings(self) -> Dict[str, object]:
+        return {
+            "thread_count": self._thread_count,
+            "default_thread_count": self._default_threads,
+            "chunk_size": self._chunk_size,
+            "theme": self._theme,
+            "preloaded": self.preloaded,
+            "preloading": self.preloading,
+        }
+
+    def update_settings(self, thread_count: Optional[int] = None, chunk_size: Optional[int] = None, theme: Optional[str] = None) -> Dict[str, object]:
+        with self._preload_lock:
+            if thread_count is not None:
+                if self.preloading:
+                    return {"updated": False, "reason": "预加载进行中，暂时无法调整线程数"}
+                self._thread_count = max(1, min(32, int(thread_count)))
+            if chunk_size is not None:
+                if self.preloading:
+                    return {"updated": False, "reason": "预加载进行中，暂时无法调整分片大小"}
+                self._chunk_size = max(1, min(10, int(chunk_size)))
+            if theme is not None:
+                self._theme = "dark" if theme == "dark" else "light"
+        payload = self.get_settings()
+        payload["updated"] = True
+        return payload
 
     def ensure_preload_started(self) -> None:
         with self._preload_lock:
@@ -360,22 +395,34 @@ class UniverseService:
         progress = min(100, int((self._preload_rows_done / max(1, self._preload_rows_total)) * 100))
         if self.preloaded:
             progress = 100
+        worker_rows = []
+        for name, stats in sorted(self._worker_stats.items()):
+            row = dict(stats)
+            row["worker"] = name
+            worker_rows.append(row)
         return {
             "ready": self.preloaded,
             "preloading": self.preloading,
             "progress_percent": progress,
             "rows_done": self._preload_rows_done,
             "rows_total": self._preload_rows_total,
+            "chunks_done": self._preload_chunks_done,
+            "chunks_total": self._preload_chunks_total,
+            "active_workers": self._active_workers,
             "galaxy_count": len(self.galaxies),
             "system_count": len(self.systems),
             "planet_count": len(self.planets_by_key),
             "preload_seconds": round(self.preload_seconds, 2),
+            "settings": self.get_settings(),
+            "worker_stats": worker_rows,
         }
 
     @staticmethod
     def _scan_galaxy_rows(
         gy_start: int, gy_end: int
-    ) -> Tuple[int, Dict[Tuple[int, int], Dict[str, object]], Dict[Tuple[int, int, int, int], Dict[str, object]], Dict[str, PlanetRecord]]:
+    ) -> Tuple[int, Dict[Tuple[int, int], Dict[str, object]], Dict[Tuple[int, int, int, int], Dict[str, object]], Dict[str, PlanetRecord], Dict[str, object]]:
+        started = time.time()
+        thread_name = threading.current_thread().name
         chunk_galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
         chunk_systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
         chunk_planets: Dict[str, PlanetRecord] = {}
@@ -443,7 +490,18 @@ class UniverseService:
                                 chunk_systems[skey]["planet_type_counter"][p.planet_type] += 1
                                 chunk_galaxies[gkey]["planet_count"] += 1
 
-        return gy_end - gy_start, chunk_galaxies, chunk_systems, chunk_planets
+        elapsed = max(0.0001, time.time() - started)
+        return gy_end - gy_start, chunk_galaxies, chunk_systems, chunk_planets, {
+            "rows": gy_end - gy_start,
+            "elapsed_ms": int(elapsed * 1000),
+            "planets": len(chunk_planets),
+            "systems": len(chunk_systems),
+            "galaxies": len(chunk_galaxies),
+            "rows_per_sec": round((gy_end - gy_start) / elapsed, 2),
+            "state": "done",
+            "updated_at": int(time.time()),
+            "thread_name": thread_name,
+        }
 
     def preload_all(self) -> None:
         wait_thread: Optional[threading.Thread] = None
@@ -462,28 +520,47 @@ class UniverseService:
 
         start = time.time()
         self._preload_rows_done = 0
-        print("[PlanetInfo] 开始预加载宇宙数据...")
+        self._preload_chunks_done = 0
+        self._preload_chunks_total = 0
+        self._active_workers = 0
+        self._worker_stats = {}
+        self._last_log_time = 0.0
+        print(f"[PlanetInfo] 开始预加载宇宙数据... (threads={self._thread_count}, chunk={self._chunk_size})")
 
         cpu = os.cpu_count() or 4
-        workers = max(2, min(8, cpu))
-        chunk_size = 2
+        workers = max(1, min(self._thread_count, max(1, cpu * 2)))
+        chunk_size = self._chunk_size
         row_ranges = [(gy, min(UNIVERSE_SIZE, gy + chunk_size)) for gy in range(0, UNIVERSE_SIZE, chunk_size)]
+        self._preload_chunks_total = len(row_ranges)
+        print(f"[PlanetInfo] 分配任务分片: {len(row_ranges)} 个，预计每片 {chunk_size} 行")
 
         with ThreadPoolExecutor(max_workers=workers) as executor:
             future_map = {executor.submit(self._scan_galaxy_rows, gy0, gy1): (gy0, gy1) for gy0, gy1 in row_ranges}
+            self._active_workers = min(workers, len(future_map))
             for future in as_completed(future_map):
-                rows_done, row_galaxies, row_systems, row_planets = future.result()
+                gy0, gy1 = future_map[future]
+                rows_done, row_galaxies, row_systems, row_planets, worker_meta = future.result()
                 self.galaxies.update(row_galaxies)
                 self.systems.update(row_systems)
                 self.planets_by_key.update(row_planets)
                 self._preload_rows_done += rows_done
+                self._preload_chunks_done += 1
 
-                if self._preload_rows_done % 10 == 0 or self._preload_rows_done >= UNIVERSE_SIZE:
+                worker_name = str(worker_meta.pop("thread_name"))
+                worker_meta["chunk"] = f"{gy0}-{gy1 - 1}"
+                self._worker_stats[worker_name] = worker_meta
+
+                now = time.time()
+                if now - self._last_log_time > 0.45 or self._preload_chunks_done >= self._preload_chunks_total:
                     pct = int(self._preload_rows_done * 100 / UNIVERSE_SIZE)
                     print(
-                        f"[PlanetInfo] 预加载进度: {self._preload_rows_done}/{UNIVERSE_SIZE} ({pct}%), "
-                        f"星系={len(self.galaxies)}, 恒星系={len(self.systems)}, 行星={len(self.planets_by_key)}"
+                        f"[PlanetInfo] 进度 {self._preload_rows_done}/{UNIVERSE_SIZE} ({pct}%) | "
+                        f"分片 {self._preload_chunks_done}/{self._preload_chunks_total} | "
+                        f"完成块 gy={gy0}-{gy1 - 1} ({worker_name}) rows/s={worker_meta['rows_per_sec']} | "
+                        f"星系={len(self.galaxies)} 恒星系={len(self.systems)} 行星={len(self.planets_by_key)}"
                     )
+                    self._last_log_time = now
+        self._active_workers = 0
 
         self.preloaded = True
         self.preloading = False
@@ -666,21 +743,22 @@ HTML = """<!doctype html>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
   <script type="module" src="https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js"></script>
   <style>
-    :root { --bg:#111111; --panel:#1b1b1b; --line:#4a4a4a; --txt:#f2f2f2; --sub:#cfcfcf; }
+    :root { --bg:#eef2f8; --panel:#ffffff; --line:#cfd8e3; --txt:#10223a; --sub:#4d5f7a; --node:#f6f8fb; --node-hover:#e9eff9; --tab:#ffffff; --tab-active:#e9f0ff; --btn:#f6f8fb; --btn-hover:#e8edf6; }
+    body[data-theme='dark'] { --bg:#111111; --panel:#1b1b1b; --line:#4a4a4a; --txt:#f2f2f2; --sub:#cfcfcf; --node:#1a1a1a; --node-hover:#2a2a2a; --tab:#2a2a2a; --tab-active:#3a3a3a; --btn:#2a2a2a; --btn-hover:#3a3a3a; }
     * { box-sizing:border-box; }
-    body { margin:0; background:radial-gradient(circle at 10% 10%, #2c2c2c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; overflow:hidden; }
+    body { margin:0; background:radial-gradient(circle at 10% 10%, color-mix(in srgb, var(--bg), #a0b9db 30%) 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; overflow:hidden; }
     .app { display:flex; flex-direction:column; height:100vh; padding:12px; gap:12px; }
     .app.hidden { display:none; }
-    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border:1px solid var(--line); border-radius:12px; background:rgba(28,28,28,.95); }
+    .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 14px; border:1px solid var(--line); border-radius:12px; background:color-mix(in srgb, var(--panel), #111 4%); }
     .brand { font-size:14px; color:var(--sub); letter-spacing:.04em; font-weight:700; }
     .tabs { display:flex; gap:8px; }
-    .tab-btn { border:1px solid #5a5a5a; border-radius:10px; background:#2a2a2a; color:#d8d8d8; padding:8px 12px; cursor:pointer; }
-    .tab-btn.active { border-color:#8a8a8a; background:#3a3a3a; color:#fff; }
+    .tab-btn { border:1px solid var(--line); border-radius:10px; background:var(--tab); color:var(--txt); padding:8px 12px; cursor:pointer; }
+    .tab-btn.active { border-color:color-mix(in srgb, var(--line), #4e7fcc 45%); background:var(--tab-active); }
     .view { display:none; min-height:0; flex:1; }
     .view.active { display:grid; }
     .view.nav-view { --nav-width:340px; grid-template-columns:minmax(300px, var(--nav-width)) 10px minmax(0,1fr); gap:0; align-items:stretch; }
     .view.rank-view { grid-template-columns:1fr; gap:12px; }
-    .panel { overflow:auto; padding:14px; background:rgba(28,28,28,.9); border:1px solid var(--line); border-radius:14px; }
+    .panel { overflow:auto; padding:14px; background:var(--panel); border:1px solid var(--line); border-radius:14px; }
     .nav-pane { min-width:0; }
     .nav-side { border-top-right-radius:0; border-bottom-right-radius:0; border-right-width:0; }
     .nav-main { border-top-left-radius:0; border-bottom-left-radius:0; border-left-width:0; }
@@ -707,8 +785,8 @@ HTML = """<!doctype html>
     .toolbar .hint { white-space:nowrap; }
     .toolbar-select { flex:1 1 120px; min-width:118px; }
     .toolbar-search { flex:1 1 88px; min-width:88px; }
-    .node { padding:11px 12px; border-radius:10px; border:1px solid #4b4b4b; margin-bottom:8px; cursor:pointer; background:#1a1a1a; transition:.18s ease; }
-    .node:hover { background:#2a2a2a; border-color:#777; transform:translateY(-1px); }
+    .node { padding:11px 12px; border-radius:10px; border:1px solid var(--line); margin-bottom:8px; cursor:pointer; background:var(--node); transition:.18s ease; }
+    .node:hover { background:var(--node-hover); border-color:color-mix(in srgb, var(--line), #6698e6 35%); transform:translateY(-1px); }
     .rank-node { position:relative; padding-right:20px; }
     .rank-meta { color:#bdbdbd; font-size:12px; margin-top:4px; }
     .rank-link-btn { background:none; border:none; color:#f2f2f2; text-decoration:underline; cursor:pointer; padding:0; font:inherit; }
@@ -718,13 +796,19 @@ HTML = """<!doctype html>
     .hint { color:#bdbdbd; font-size:12px; }
     .kv { margin:9px 0; line-height:1.5; }
     .pill { display:inline-block; margin:4px 6px 4px 0; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#2b2b2b; }
-    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#2a2a2a; color:var(--txt); padding:7px 10px; cursor:pointer; }
-    .btn-icon:hover { background:#3a3a3a; }
+    .btn-icon { border:1px solid var(--line); border-radius:8px; background:var(--btn); color:var(--txt); padding:7px 10px; cursor:pointer; }
+    .btn-icon:hover { background:var(--btn-hover); }
     .loading-overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#0f0f0f,#1a1a1a); z-index:99; }
-    .loading-card { width:min(560px,88vw); background:rgba(28,28,28,.92); border:1px solid var(--line); border-radius:14px; padding:22px; }
+    .loading-card { width:min(660px,92vw); background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:22px; }
     .loading-title { margin:0 0 8px; color:var(--sub); font-size:20px; }
-    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#262626; }
-    .bar { height:100%; width:4%; background:linear-gradient(90deg,#666,#cfcfcf); }
+    .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:color-mix(in srgb, var(--bg), #000 10%); }
+    .bar { height:100%; width:4%; background:linear-gradient(90deg,#4a90e2,#60d5fa,#86f3ca); transition:width .22s ease; }
+    .loading-meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:8px 0; }
+    .loading-meta .pill { margin:0; background:var(--node); }
+    .worker-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:8px; margin-top:8px; }
+    .worker-card { border:1px solid var(--line); border-radius:10px; padding:8px; background:var(--node); }
+    .worker-title { font-size:12px; color:var(--sub); margin-bottom:6px; }
+    .worker-row { font-size:12px; margin:2px 0; }
   </style>
 </head>
 <body>
@@ -733,6 +817,8 @@ HTML = """<!doctype html>
     <h2 class="loading-title">加载中</h2>
     <div id="loadingStats" class="hint" style="margin-bottom:8px">正在构建宇宙索引...</div>
     <div class="progress"><div id="loadingBar" class="bar"></div></div>
+    <div id="loadingMeta" class="loading-meta"></div>
+    <div id="loadingWorkerList" class="worker-grid"></div>
   </div>
 </div>
 
@@ -742,8 +828,25 @@ HTML = """<!doctype html>
     <div class="tabs">
       <button id="tabNav" class="tab-btn active">导航检索</button>
       <button id="tabRank" class="tab-btn">恒星系排行</button>
+      <button id="settingsBtn" class="tab-btn"><i class="bi bi-sliders"></i> 设置</button>
     </div>
   </header>
+
+  <section id="settingsPanel" class="panel" style="display:none; padding:10px 14px;">
+    <div class="toolbar" style="margin:0;">
+      <span class="hint">主题</span>
+      <fluent-select id="themeSelect" style="width:130px">
+        <fluent-option value="light">浅色(默认)</fluent-option>
+        <fluent-option value="dark">深色</fluent-option>
+      </fluent-select>
+      <span class="hint">线程</span>
+      <fluent-text-field id="threadInput" style="width:90px" value="8"></fluent-text-field>
+      <span class="hint">分片行数</span>
+      <fluent-text-field id="chunkInput" style="width:90px" value="2"></fluent-text-field>
+      <button id="applySettingsBtn" class="btn-icon">应用</button>
+      <span id="settingsHint" class="hint"></span>
+    </div>
+  </section>
 
   <section id="navView" class="view nav-view active">
     <aside class="panel nav-pane nav-side">
@@ -801,6 +904,8 @@ const appRoot = document.getElementById('app');
 const loadingOverlay = document.getElementById('loadingOverlay');
 const loadingStats = document.getElementById('loadingStats');
 const loadingBar = document.getElementById('loadingBar');
+const loadingMeta = document.getElementById('loadingMeta');
+const loadingWorkerList = document.getElementById('loadingWorkerList');
 const info = document.getElementById('info');
 const list = document.getElementById('list');
 const breadcrumb = document.getElementById('breadcrumb');
@@ -820,6 +925,12 @@ const rankHoverPanel = document.getElementById('rankHoverPanel');
 const navDivider = document.getElementById('navDivider');
 const searchBlock = document.getElementById('searchBlock');
 const forceReady = new URLSearchParams(window.location.search).get('ready') === '1';
+const settingsPanel = document.getElementById('settingsPanel');
+const settingsBtn = document.getElementById('settingsBtn');
+const themeSelect = document.getElementById('themeSelect');
+const threadInput = document.getElementById('threadInput');
+const chunkInput = document.getElementById('chunkInput');
+const settingsHint = document.getElementById('settingsHint');
 
 let state = {
   tab: 'nav',
@@ -927,6 +1038,66 @@ async function getJson(url){
   const r = await fetch(url);
   if (!r.ok) throw new Error(await r.text());
   return await r.json();
+}
+
+
+function applyTheme(theme){
+  document.body.setAttribute('data-theme', theme === 'dark' ? 'dark' : 'light');
+}
+
+function renderLoadingDetails(status){
+  const chunksDone = status.chunks_done || 0;
+  const chunksTotal = status.chunks_total || 0;
+  loadingMeta.innerHTML = `
+    <span class='pill'>线程: ${status.settings?.thread_count ?? '-'} / 活跃: ${status.active_workers ?? 0}</span>
+    <span class='pill'>分片: ${chunksDone}/${chunksTotal}</span>
+    <span class='pill'>耗时: ${status.preload_seconds || 0}s</span>
+    <span class='pill'>状态: ${status.ready ? '完成' : (status.preloading ? '加载中' : '待启动')}</span>
+  `;
+
+  const workers = (status.worker_stats || []).slice(0, 8);
+  loadingWorkerList.innerHTML = '';
+  for (const w of workers){
+    const card = document.createElement('div');
+    card.className = 'worker-card';
+    card.innerHTML = `
+      <div class='worker-title'>${w.worker}</div>
+      <div class='worker-row'>块: ${w.chunk || '-'}</div>
+      <div class='worker-row'>行速: ${w.rows_per_sec || 0}/s</div>
+      <div class='worker-row'>行星: ${w.planets || 0}</div>
+      <div class='worker-row'>耗时: ${(w.elapsed_ms || 0)}ms</div>
+    `;
+    loadingWorkerList.appendChild(card);
+  }
+}
+
+async function loadSettings(){
+  const settings = await getJson(`${API}/settings`);
+  themeSelect.value = settings.theme || 'light';
+  threadInput.value = String(settings.thread_count || 8);
+  chunkInput.value = String(settings.chunk_size || 2);
+  applyTheme(settings.theme || 'light');
+}
+
+async function applySettings(){
+  const t = Number(threadInput.value);
+  const c = Number(chunkInput.value);
+  const theme = themeSelect.value || 'light';
+  if (!Number.isInteger(t) || t < 1) {
+    settingsHint.textContent = '线程数需为正整数';
+    return;
+  }
+  if (!Number.isInteger(c) || c < 1) {
+    settingsHint.textContent = '分片行数需为正整数';
+    return;
+  }
+  const result = await getJson(`${API}/settings/update?threads=${t}&chunk_size=${c}&theme=${theme}`);
+  if (!result.updated) {
+    settingsHint.textContent = result.reason || '应用失败';
+    return;
+  }
+  settingsHint.textContent = `已应用: 主题=${result.theme}, 线程=${result.thread_count}, 分片=${result.chunk_size}`;
+  applyTheme(result.theme);
 }
 
 async function loadList(search=''){
@@ -1156,6 +1327,7 @@ async function jumpBySearch(){
 async function init() {
   bindNavDividerDrag();
   autoFitNavWidth();
+  await loadSettings();
 
   if (!forceReady) {
     const loadingStart = Date.now();
@@ -1167,6 +1339,7 @@ async function init() {
       if (status.preloading || !status.ready) sawPreloading = true;
       loadingStats.textContent = `进度 ${pct}% (${status.rows_done}/${status.rows_total}) · 星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
       loadingBar.style.width = `${Math.max(4, pct)}%`;
+      renderLoadingDetails(status);
       const elapsed = Date.now() - loadingStart;
       const canEnter = status.ready && elapsed >= MIN_LOADING_MS && (sawPreloading || pct >= 100);
       if (canEnter) {
@@ -1182,6 +1355,8 @@ async function init() {
     appRoot.classList.remove('hidden');
     const app = await getJson(`${API}/app_info`);
     info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
+    loadingMeta.innerHTML = '';
+    loadingWorkerList.innerHTML = '';
   }
 
   setSortOptions('galaxy');
@@ -1230,6 +1405,8 @@ document.getElementById('backBtn').onclick = async ()=>{
     setSortOptions('galaxy');
     const app = await getJson(`${API}/app_info`);
     info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
+    loadingMeta.innerHTML = '';
+    loadingWorkerList.innerHTML = '';
   }
   state.desc = false;
   setSortIndicator();
@@ -1265,6 +1442,17 @@ document.getElementById('rankPrev').onclick = async ()=>{
   await loadRankings();
 };
 
+settingsBtn.onclick = ()=>{
+  const opened = settingsPanel.style.display !== 'none';
+  settingsPanel.style.display = opened ? 'none' : 'block';
+};
+
+document.getElementById('applySettingsBtn').onclick = async ()=>{
+  await applySettings();
+};
+
+themeSelect.onchange = ()=> applyTheme(themeSelect.value);
+
 document.getElementById('rankNext').onclick = async ()=>{
   if (state.rank.page >= state.rank.total_pages) return;
   state.rank.page += 1;
@@ -1293,7 +1481,8 @@ LOADING_HTML = """<!doctype html>
     .title { color:var(--sub); font-size:16px; margin:0 0 8px; }
     .hint { color:#bdbdbd; font-size:12px; margin-bottom:8px; }
     .progress { height:12px; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#262626; }
-    .bar { height:100%; width:4%; background:linear-gradient(90deg,#666,#cfcfcf); transition:width .2s ease; }
+    .bar { height:100%; width:4%; background:linear-gradient(90deg,#4a90e2,#60d5fa,#86f3ca); transition:width .2s ease; }
+    .meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; margin-top:8px; font-size:12px; color:#bdbdbd; }
   </style>
 </head>
 <body>
@@ -1302,11 +1491,13 @@ LOADING_HTML = """<!doctype html>
     <h3 class="title">加载中</h3>
     <div id="loadingStats" class="hint">正在构建宇宙索引...</div>
     <div class="progress"><div id="loadingBar" class="bar"></div></div>
+    <div id="loadingMeta" class="meta"></div>
   </div>
 </div>
 <script>
 const stats = document.getElementById('loadingStats');
 const bar = document.getElementById('loadingBar');
+const meta = document.getElementById('loadingMeta');
 async function poll(){
   try {
     const r = await fetch('/api/preload_status');
@@ -1315,6 +1506,7 @@ async function poll(){
     const pct = d.progress_percent || 0;
     bar.style.width = `${Math.max(4, pct)}%`;
     stats.textContent = `进度 ${pct}% (${d.rows_done}/${d.rows_total}) · 星系: ${d.galaxy_count} · 恒星系: ${d.system_count} · 行星: ${d.planet_count}`;
+    meta.innerHTML = `<span>线程: ${d.settings?.thread_count ?? '-'}</span><span>活跃: ${d.active_workers ?? 0}</span><span>分片: ${d.chunks_done ?? 0}/${d.chunks_total ?? 0}</span><span>耗时: ${d.preload_seconds || 0}s</span>`;
   } catch (e) {
     stats.textContent = '正在连接本地服务...';
   }
@@ -1363,6 +1555,21 @@ class AppHTTP(BaseHTTPRequestHandler):
             if path == "/api/preload_status":
                 self.service.ensure_preload_started()
                 self._json(self.service.preload_status())
+                return
+            if path == "/api/settings":
+                self._json(self.service.get_settings())
+                return
+            if path == "/api/settings/update":
+                thread_count = params.get("threads")
+                chunk_size = params.get("chunk_size")
+                theme = params.get("theme")
+                self._json(
+                    self.service.update_settings(
+                        thread_count=int(thread_count) if thread_count is not None else None,
+                        chunk_size=int(chunk_size) if chunk_size is not None else None,
+                        theme=theme,
+                    )
+                )
                 return
             if path == "/api/app_info":
                 self._json(self.service.app_info())
