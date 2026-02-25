@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import inspect
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -592,6 +593,7 @@ class UniverseService:
     ) -> Dict[str, object]:
         self.preload_all()
         rows: List[Dict[str, object]] = []
+        threshold_t = 50
 
         for s in self.systems.values():
             planets = [self.planets_by_key[k] for k in s["planet_keys"]]
@@ -600,7 +602,11 @@ class UniverseService:
 
             overall_area = sum(p.planet_size**2 for p in planets)
             avg_mineral_density = sum(p.mineral_density for p in planets) / len(planets)
-            score_v = overall_area / (avg_mineral_density**2)
+            planet_count = len(planets)
+            avg_area = overall_area / planet_count
+            base_value = sum((p.planet_size**2) ** 0.5 / p.mineral_density for p in planets)
+            creep_penalty = planet_count / math.log2((avg_area / threshold_t) + 2)
+            score_v = base_value * creep_penalty
             rows.append(
                 {
                     "gx": s["gx"],
@@ -610,7 +616,10 @@ class UniverseService:
                     "star_type": s["star_type"],
                     "planet_count": s["planet_count"],
                     "overall_area": overall_area,
+                    "avg_area": round(avg_area, 2),
                     "avg_mineral_density": round(avg_mineral_density, 2),
+                    "base_value": round(base_value, 4),
+                    "cost_penalty": round(creep_penalty, 4),
                     "score_v": round(score_v, 4),
                     "planet_type_stats": dict(s["planet_type_counter"]),
                 }
@@ -679,8 +688,7 @@ HTML = """<!doctype html>
     .node:hover { background:#142548; border-color:#3f6bad; transform:translateY(-1px); }
     .rank-node { position:relative; padding-right:20px; }
     .rank-meta { color:#9bb6dd; font-size:12px; margin-top:4px; }
-    .hover-panel { position:absolute; right:8px; top:8px; width:265px; background:#0a162f; border:1px solid #466da6; border-radius:10px; padding:8px; display:none; z-index:2; box-shadow:0 8px 24px rgba(0,0,0,.35); }
-    .rank-node:hover .hover-panel { display:block; }
+    .rank-hover-panel { position:fixed; left:0; top:0; width:290px; background:#0a162f; border:1px solid #466da6; border-radius:10px; padding:8px; display:none; z-index:9999; box-shadow:0 8px 24px rgba(0,0,0,.45); pointer-events:none; }
     .pager { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; }
     .hint { color:#9bb6dd; font-size:12px; }
     .kv { margin:9px 0; line-height:1.5; }
@@ -755,6 +763,7 @@ HTML = """<!doctype html>
         <span id="rankPageInfo" class="hint"></span>
       </div>
       <div id="rankList"></div>
+      <div id="rankHoverPanel" class="rank-hover-panel"></div>
     </main>
   </section>
 </div>
@@ -780,6 +789,7 @@ const rankSortKey = document.getElementById('rankSortKey');
 const rankSortDirIcon = document.getElementById('rankSortDirIcon');
 const rankSortDesc = document.getElementById('rankSortDesc');
 const rankPageInfo = document.getElementById('rankPageInfo');
+const rankHoverPanel = document.getElementById('rankHoverPanel');
 
 let state = {
   tab: 'nav',
@@ -951,7 +961,39 @@ function formatStats(stats){
   return parts.join(' · ') || '无';
 }
 
+function updateRankHoverPanelPosition(event){
+  const offset = 14;
+  const panelWidth = 290;
+  const panelHeight = 170;
+  let left = event.clientX + offset;
+  let top = event.clientY + offset;
+  if (left + panelWidth > window.innerWidth - 8) left = event.clientX - panelWidth - offset;
+  if (top + panelHeight > window.innerHeight - 8) top = event.clientY - panelHeight - offset;
+  rankHoverPanel.style.left = `${Math.max(8, left)}px`;
+  rankHoverPanel.style.top = `${Math.max(8, top)}px`;
+}
+
+function showRankHoverPanel(r, event){
+  rankHoverPanel.innerHTML = `
+    <div><b>位置</b>：星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy})</div>
+    <div><b>恒星</b>：${r.star_type}</div>
+    <div><b>组成</b>：${formatStats(r.planet_type_stats)}</div>
+    <div><b>S总面积</b>：${r.overall_area}（均值 ${r.avg_area}）</div>
+    <div><b>A平均矿物丰度</b>：${r.avg_mineral_density}</div>
+    <div><b>Σ(√Si/Ai)</b>：${r.base_value}</div>
+    <div><b>惩罚项</b>：N/log2(S̄/T+2) = ${r.cost_penalty}（T=50）</div>
+    <div><b>Vsys</b>：${r.score_v}</div>
+  `;
+  rankHoverPanel.style.display = 'block';
+  updateRankHoverPanelPosition(event);
+}
+
+function hideRankHoverPanel(){
+  rankHoverPanel.style.display = 'none';
+}
+
 async function loadRankings(){
+  hideRankHoverPanel();
   rankList.innerHTML = '<div class="hint">加载排行中...</div>';
   const data = await getJson(`${API}/system_rankings?sort_key=${state.rank.sort_key}&desc=${state.rank.desc?1:0}&page=${state.rank.page}&page_size=${state.rank.page_size}`);
   state.rank.page = data.page;
@@ -966,14 +1008,11 @@ async function loadRankings(){
     div.className = 'node rank-node';
     div.innerHTML = `
       <div><b>#${rankNo}</b> 星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy}) · ${r.star_type}</div>
-      <div class='rank-meta'>总面积S=${r.overall_area} · 平均矿物稀疏度A=${r.avg_mineral_density} · 评分v=${r.score_v} · 行星数=${r.planet_count}</div>
-      <div class='hover-panel'>
-        <div><b>位置</b>：星系(${r.gx},${r.gy}) / 恒星系(${r.sx},${r.sy})</div>
-        <div><b>恒星</b>：${r.star_type}</div>
-        <div><b>组成</b>：${formatStats(r.planet_type_stats)}</div>
-        <div><b>指标</b>：S=${r.overall_area}, A=${r.avg_mineral_density}, v=${r.score_v}</div>
-      </div>
+      <div class='rank-meta'>S=${r.overall_area} · A=${r.avg_mineral_density} · Vsys=${r.score_v} · 行星数=${r.planet_count}</div>
     `;
+    div.addEventListener('mouseenter', (event)=> showRankHoverPanel(r, event));
+    div.addEventListener('mousemove', (event)=> updateRankHoverPanelPosition(event));
+    div.addEventListener('mouseleave', hideRankHoverPanel);
     rankList.appendChild(div);
   });
 }
@@ -1053,7 +1092,7 @@ async function init() {
   rankSortKey.innerHTML = `
     <fluent-option value="overall_area">overall_area (总面积S)</fluent-option>
     <fluent-option value="avg_mineral_density">avg_mineral_density (矿物稀疏度A)</fluent-option>
-    <fluent-option value="score_v">score_v = S/(A**2)</fluent-option>
+    <fluent-option value="score_v">Vsys = Σ(√Si/Ai) × N/log2(S̄/T+2)</fluent-option>
   `;
   rankSortKey.value = state.rank.sort_key;
   setRankSortIndicator();
