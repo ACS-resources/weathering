@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
+from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -248,69 +250,169 @@ def verify_samples() -> None:
 
 class UniverseService:
     def __init__(self) -> None:
-        self.planets_cache: Dict[str, PlanetRecord] = {}
+        self.preloaded = False
+        self.preload_seconds = 0.0
+        self.planets_by_key: Dict[str, PlanetRecord] = {}
+        self.galaxies: Dict[Tuple[int, int], Dict[str, object]] = {}
+        self.systems: Dict[Tuple[int, int, int, int], Dict[str, object]] = {}
 
-    def galaxies(self) -> List[Dict[str, int]]:
-        result: List[Dict[str, int]] = []
+    def preload_all(self) -> None:
+        if self.preloaded:
+            return
+        start = time.time()
+
         for gy in range(UNIVERSE_SIZE):
             for gx in range(UNIVERSE_SIZE):
-                if is_galaxy((gx, gy)):
-                    result.append({"x": gx, "y": gy})
-        return result
-
-    def star_systems(self, gx: int, gy: int) -> List[Dict[str, object]]:
-        out: List[Dict[str, object]] = []
-        for sy in range(GALAXY_SIZE):
-            for sx in range(GALAXY_SIZE):
-                if is_star_system((gx, gy), (sx, sy)):
-                    map_key = build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])
-                    out.append({"x": sx, "y": sy, "star_type": calculate_star_type(map_key)})
-        return out
-
-    def planets(self, gx: int, gy: int, sx: int, sy: int) -> List[Dict[str, object]]:
-        out: List[Dict[str, object]] = []
-        for py in range(STAR_SYSTEM_SIZE):
-            for px in range(STAR_SYSTEM_SIZE):
-                key = build_map_key("MapOfPlanet", [(gx, gy), (sx, sy), (px, py)])
-                try:
-                    p = compute_planet_record(key)
-                except ValueError:
+                if not is_galaxy((gx, gy)):
                     continue
-                self.planets_cache[p.map_key] = p
-                out.append(asdict(p))
-        return out
+                gkey = (gx, gy)
+                self.galaxies[gkey] = {
+                    "x": gx,
+                    "y": gy,
+                    "system_keys": [],
+                    "planet_count": 0,
+                    "star_type_counter": Counter(),
+                }
 
-    def find_planet(self, map_key: str) -> Dict[str, object]:
-        if map_key in self.planets_cache:
-            return asdict(self.planets_cache[map_key])
-        p = compute_planet_record(map_key)
-        self.planets_cache[p.map_key] = p
-        return asdict(p)
+                for sy in range(GALAXY_SIZE):
+                    for sx in range(GALAXY_SIZE):
+                        if not is_star_system((gx, gy), (sx, sy)):
+                            continue
+                        ss_map_key = build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])
+                        star_type = calculate_star_type(ss_map_key)
 
-    def query_loaded(self, q: str, planet_type: str, sort_by: str, page: int, page_size: int) -> Dict[str, object]:
-        rows = list(self.planets_cache.values())
-        if q:
-            rows = [x for x in rows if q in x.map_key or q in x.star_type or q in x.planet_type]
-        if planet_type and planet_type != "全部":
-            rows = [x for x in rows if x.planet_type == planet_type]
-        if sort_by in PlanetRecord.__annotations__:
-            rows.sort(key=lambda r: getattr(r, sort_by), reverse=True)
+                        skey = (gx, gy, sx, sy)
+                        self.galaxies[gkey]["system_keys"].append(skey)
+                        self.galaxies[gkey]["star_type_counter"][star_type] += 1
 
-        total = len(rows)
-        start = max((page - 1) * page_size, 0)
-        end = start + page_size
+                        self.systems[skey] = {
+                            "gx": gx,
+                            "gy": gy,
+                            "sx": sx,
+                            "sy": sy,
+                            "star_type": star_type,
+                            "planet_keys": [],
+                            "planet_count": 0,
+                            "planet_type_counter": Counter(),
+                        }
+
+                        ss_hash_i = csharp_int32(HashUtility.hash_string(build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)])))
+                        main_star, second_star = _star_positions(build_map_key("MapOfStarSystem", [(gx, gy), (sx, sy)]))
+
+                        for py in range(STAR_SYSTEM_SIZE):
+                            for px in range(STAR_SYSTEM_SIZE):
+                                is_star_tile = (px, py) == main_star or (second_star is not None and (px, py) == second_star)
+                                tile_hash = HashUtility.hash_tile(px, py, STAR_SYSTEM_SIZE, STAR_SYSTEM_SIZE, ss_hash_i)
+                                h = HashUtility.hash_uint(tile_hash)
+
+                                if is_star_tile:
+                                    continue
+                                h = HashUtility.hash_uint(h)
+                                if h % 50 != 0:
+                                    continue
+                                h = HashUtility.hash_uint(h)
+                                if h % 2 != 0:
+                                    continue
+
+                                map_key = build_map_key("MapOfPlanet", [(gx, gy), (sx, sy), (px, py)])
+                                try:
+                                    p = compute_planet_record(map_key)
+                                except ValueError:
+                                    continue
+                                self.planets_by_key[p.map_key] = p
+                                self.systems[skey]["planet_keys"].append(p.map_key)
+                                self.systems[skey]["planet_count"] += 1
+                                self.systems[skey]["planet_type_counter"][p.planet_type] += 1
+                                self.galaxies[gkey]["planet_count"] += 1
+
+        self.preloaded = True
+        self.preload_seconds = time.time() - start
+
+    @staticmethod
+    def _sort_rows(rows: List[Dict[str, object]], key: str, desc: bool) -> List[Dict[str, object]]:
+        if not rows:
+            return rows
+        if key not in rows[0]:
+            key = "x"
+        return sorted(rows, key=lambda r: r[key], reverse=desc)
+
+    def list_galaxies(self, sort_key: str = "x", desc: bool = False, search: str = "") -> List[Dict[str, object]]:
+        self.preload_all()
+        rows = [{"x": g["x"], "y": g["y"], "planet_count": g["planet_count"]} for g in self.galaxies.values()]
+        if search:
+            try:
+                sx, sy = [int(x.strip()) for x in search.split(",")]
+                rows = [r for r in rows if r["x"] == sx and r["y"] == sy]
+            except Exception:
+                rows = []
+        return self._sort_rows(rows, sort_key, desc)
+
+    def galaxy_info(self, gx: int, gy: int) -> Dict[str, object]:
+        self.preload_all()
+        g = self.galaxies[(gx, gy)]
         return {
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "rows": [asdict(x) for x in rows[start:end]],
+            "level": "galaxy",
+            "x": gx,
+            "y": gy,
+            "planet_count": g["planet_count"],
+            "star_type_stats": dict(g["star_type_counter"]),
+            "star_system_count": len(g["system_keys"]),
         }
 
-    def stats(self) -> Dict[str, int]:
+    def list_systems(self, gx: int, gy: int, sort_key: str = "x", desc: bool = False, search: str = "") -> List[Dict[str, object]]:
+        self.preload_all()
+        g = self.galaxies[(gx, gy)]
+        rows = []
+        for skey in g["system_keys"]:
+            s = self.systems[skey]
+            rows.append({
+                "x": s["sx"],
+                "y": s["sy"],
+                "star_type": s["star_type"],
+                "planet_count": s["planet_count"],
+            })
+        if search:
+            try:
+                sx, sy = [int(x.strip()) for x in search.split(",")]
+                rows = [r for r in rows if r["x"] == sx and r["y"] == sy]
+            except Exception:
+                rows = []
+        return self._sort_rows(rows, sort_key, desc)
+
+    def system_info(self, gx: int, gy: int, sx: int, sy: int) -> Dict[str, object]:
+        self.preload_all()
+        s = self.systems[(gx, gy, sx, sy)]
         return {
-            "cached_planets": len(self.planets_cache),
-            "cached_star_systems": len({(p.galaxy_x, p.galaxy_y, p.star_system_x, p.star_system_y) for p in self.planets_cache.values()}),
-            "cached_galaxies": len({(p.galaxy_x, p.galaxy_y) for p in self.planets_cache.values()}),
+            "level": "system",
+            "gx": gx,
+            "gy": gy,
+            "x": sx,
+            "y": sy,
+            "star_type": s["star_type"],
+            "planet_count": s["planet_count"],
+            "planet_type_stats": dict(s["planet_type_counter"]),
+        }
+
+    def list_planets(self, gx: int, gy: int, sx: int, sy: int, sort_key: str = "planet_x", desc: bool = False) -> List[Dict[str, object]]:
+        self.preload_all()
+        s = self.systems[(gx, gy, sx, sy)]
+        rows = [asdict(self.planets_by_key[k]) for k in s["planet_keys"]]
+        if rows and sort_key not in rows[0]:
+            sort_key = "planet_x"
+        rows = sorted(rows, key=lambda x: x[sort_key], reverse=desc)
+        return rows
+
+    def planet_info(self, map_key: str) -> Dict[str, object]:
+        self.preload_all()
+        return asdict(self.planets_by_key[map_key])
+
+    def app_info(self) -> Dict[str, object]:
+        self.preload_all()
+        return {
+            "galaxy_count": len(self.galaxies),
+            "system_count": len(self.systems),
+            "planet_count": len(self.planets_by_key),
+            "preload_seconds": round(self.preload_seconds, 2),
         }
 
 
@@ -320,216 +422,235 @@ HTML = """<!doctype html>
   <meta charset=\"utf-8\" />
   <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
   <title>Weathering Universe Explorer</title>
+  <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css\">
   <script type=\"module\" src=\"https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js\"></script>
   <style>
     :root { --bg:#0b1220; --panel:#111827; --line:#334155; --txt:#e2e8f0; --sub:#93c5fd; }
     body { margin:0; background:var(--bg); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
-    .app { display:grid; grid-template-columns: 360px 1fr; height:100vh; }
+    .app { display:grid; grid-template-columns: 420px 1fr; height:100vh; }
     .left { border-right:1px solid var(--line); overflow:auto; padding:10px; background:#0f172a; }
-    .right { display:grid; grid-template-rows:auto auto auto 1fr; gap:8px; padding:10px; }
-    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; }
+    .right { overflow:auto; padding:10px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:10px; }
+    .title { color:var(--sub); margin:0 0 8px; font-size:16px; font-weight:700; }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
-    .title { color:var(--sub); font-weight:700; margin:0 0 8px 0; }
-    .node { padding:4px 0 4px 10px; border-radius:6px; cursor:pointer; }
+    .node { padding:8px 10px; border-radius:8px; border:1px solid #263244; margin-bottom:6px; cursor:pointer; }
     .node:hover { background:#1e293b; }
-    .sub { margin-left:14px; display:none; }
-    .hint { font-size:12px; color:#9ca3af; }
-    table { width:100%; border-collapse:collapse; font-size:12px; }
-    th, td { border:1px solid var(--line); padding:5px; }
-    th { background:#1f2937; position:sticky; top:0; cursor:pointer; }
-    .table-wrap { overflow:auto; max-height:100%; }
-    .badge { background:#1e293b; border:1px solid var(--line); padding:4px 8px; border-radius:999px; font-size:12px; }
+    .hint { color:#93a4bb; font-size:12px; }
+    .kv { margin:6px 0; }
+    .pill { display:inline-block; margin:3px 6px 3px 0; padding:4px 8px; border:1px solid var(--line); border-radius:999px; background:#1e293b; }
+    .btn-icon { border:1px solid var(--line); border-radius:8px; background:#162338; color:var(--txt); padding:6px 8px; cursor:pointer; }
+    .btn-icon:hover { background:#26364d; }
   </style>
 </head>
 <body>
 <div class=\"app\">
   <aside class=\"left\">
     <div class=\"card\">
-      <h3 class=\"title\">宇宙树状导航</h3>
-      <div class=\"hint\">懒加载：点开星系后加载恒星系，点开恒星系后加载行星。</div>
+      <h3 class=\"title\">导航</h3>
+      <div class=\"row\" style=\"margin-bottom:8px\">
+        <button id=\"backBtn\" class=\"btn-icon\"><i class=\"bi bi-arrow-left-circle\"></i> 返回</button>
+        <span id=\"breadcrumb\" class=\"hint\">宇宙 / 星系列表</span>
+      </div>
+
+      <div id=\"searchBlock\" class=\"row\" style=\"margin-bottom:8px\">
+        <fluent-text-field id=\"coordSearch\" placeholder=\"输入 x,y 直接进入\" style=\"width:220px\"></fluent-text-field>
+        <button id=\"searchBtn\" class=\"btn-icon\"><i class=\"bi bi-search\"></i></button>
+      </div>
+
+      <div class=\"row\" style=\"margin-bottom:8px\">
+        <fluent-select id=\"sortKey\" style=\"width:180px\"></fluent-select>
+        <button id=\"sortDirBtn\" class=\"btn-icon\" title=\"切换升降序\"><i id=\"sortDirIcon\" class=\"bi bi-sort-down\"></i></button>
+      </div>
+
+      <div id=\"list\"></div>
     </div>
-    <div id=\"tree\" class=\"card\" style=\"margin-top:8px\"></div>
   </aside>
 
   <main class=\"right\">
-    <section class=\"card\">
-      <h3 class=\"title\">快速定位</h3>
-      <div class=\"row\">
-        <fluent-text-field id=\"mapKey\" style=\"width:460px\" placeholder=\"Weathering.MapOfPlanet#=gX,gY=sX,sY=pX,pY\"></fluent-text-field>
-        <fluent-button id=\"findByMapKey\" appearance=\"accent\">按 MapKey 定位</fluent-button>
-      </div>
-    </section>
-
-    <section class=\"card\">
-      <h3 class=\"title\">筛选器（基于已加载数据）</h3>
-      <div class=\"row\">
-        <fluent-text-field id=\"q\" placeholder=\"关键词\"></fluent-text-field>
-        <fluent-select id=\"ptype\"><fluent-option>全部</fluent-option></fluent-select>
-        <fluent-select id=\"sort\">
-          <fluent-option value=\"planet_size\">planet_size</fluent-option>
-          <fluent-option value=\"mineral_density\">mineral_density</fluent-option>
-          <fluent-option value=\"seconds_for_a_day\">seconds_for_a_day</fluent-option>
-          <fluent-option value=\"days_for_a_year\">days_for_a_year</fluent-option>
-          <fluent-option value=\"galaxy_x\">galaxy_x</fluent-option>
-          <fluent-option value=\"star_system_x\">star_system_x</fluent-option>
-        </fluent-select>
-        <fluent-button id=\"apply\">应用</fluent-button>
-        <span class=\"badge\" id=\"stats\">缓存: 0</span>
-      </div>
-    </section>
-
-    <section class=\"card\" id=\"detail\">请选择行星查看详情。</section>
-
-    <section class=\"card table-wrap\">
-      <table id=\"tbl\"></table>
-    </section>
+    <div class=\"card\">
+      <h3 class=\"title\">具体信息</h3>
+      <div id=\"info\" class=\"hint\">启动中：正在加载全部星球数据...</div>
+    </div>
   </main>
 </div>
 
 <script>
 const API = '/api';
-const tree = document.getElementById('tree');
-const tbl = document.getElementById('tbl');
-const detail = document.getElementById('detail');
-const stats = document.getElementById('stats');
-const ptype = document.getElementById('ptype');
-const mapKey = document.getElementById('mapKey');
+const info = document.getElementById('info');
+const list = document.getElementById('list');
+const breadcrumb = document.getElementById('breadcrumb');
+const sortKey = document.getElementById('sortKey');
+const sortDirIcon = document.getElementById('sortDirIcon');
 
-for (const p of ["荒芜行星","干旱行星","海洋行星","熔岩行星","冰冻星球","类地行星","盖亚行星","超维星球"]) {
-  const opt = document.createElement('fluent-option');
-  opt.textContent = p;
-  ptype.appendChild(opt);
+let state = {
+  level: 'galaxy',
+  gx: null, gy: null,
+  sx: null, sy: null,
+  sort_key: 'x',
+  desc: false,
+};
+
+function setSortOptions(level){
+  sortKey.innerHTML = '';
+  const keys = level === 'galaxy'
+    ? ['x','y','planet_count']
+    : level === 'system'
+    ? ['x','y','planet_count']
+    : ['planet_x','planet_y','planet_size','mineral_density','seconds_for_a_day'];
+  for (const k of keys){
+    const o = document.createElement('fluent-option');
+    o.value = k;
+    o.textContent = k;
+    sortKey.appendChild(o);
+  }
+  if (!keys.includes(state.sort_key)) state.sort_key = keys[0];
+  sortKey.value = state.sort_key;
 }
 
-let currentRows = [];
-let currentSort = 'planet_size';
-let sortDesc = true;
+function renderInfo(data){
+  if (data.level === 'galaxy') {
+    const starStats = Object.entries(data.star_type_stats).map(([k,v])=>`<span class='pill'>${k}: ${v}</span>`).join('');
+    info.innerHTML = `
+      <div class='kv'><b>当前层级:</b> 星系</div>
+      <div class='kv'><b>坐标:</b> (${data.x}, ${data.y})</div>
+      <div class='kv'><b>恒星系数量:</b> ${data.star_system_count}</div>
+      <div class='kv'><b>星球数量:</b> ${data.planet_count}</div>
+      <div class='kv'><b>恒星类型统计:</b><br>${starStats || '无'}</div>
+    `;
+  } else if (data.level === 'system') {
+    const pStats = Object.entries(data.planet_type_stats).map(([k,v])=>`<span class='pill'>${k}: ${v}</span>`).join('');
+    info.innerHTML = `
+      <div class='kv'><b>当前层级:</b> 恒星系</div>
+      <div class='kv'><b>坐标:</b> 星系(${data.gx}, ${data.gy}) / 恒星系(${data.x}, ${data.y})</div>
+      <div class='kv'><b>恒星类型:</b> ${data.star_type}</div>
+      <div class='kv'><b>星球数量:</b> ${data.planet_count}</div>
+      <div class='kv'><b>行星类型统计:</b><br>${pStats || '无'}</div>
+    `;
+  } else {
+    info.innerHTML = `
+      <div class='kv'><b>当前层级:</b> 行星</div>
+      <div class='kv'><b>MapKey:</b> ${data.map_key}</div>
+      <div class='kv'><b>坐标:</b> 星系(${data.galaxy_x},${data.galaxy_y}) / 恒星系(${data.star_system_x},${data.star_system_y}) / 行星(${data.planet_x},${data.planet_y})</div>
+      <div class='kv'><b>恒星类型:</b> ${data.star_type}</div>
+      <div class='kv'><b>行星类型:</b> ${data.planet_type}</div>
+      <div class='kv'><b>昼夜周期:</b> ${data.seconds_for_a_day}s</div>
+      <div class='kv'><b>四季周期:</b> ${data.days_for_a_year}天</div>
+      <div class='kv'><b>月相周期:</b> ${data.days_for_a_month}天</div>
+      <div class='kv'><b>四季月相:</b> ${data.month_for_a_year}</div>
+      <div class='kv'><b>星球大小:</b> ${data.planet_size}</div>
+      <div class='kv'><b>矿物稀疏度:</b> ${data.mineral_density}</div>
+    `;
+  }
+}
 
 async function getJson(url){
   const r = await fetch(url);
-  if(!r.ok){ throw new Error(await r.text()); }
+  if (!r.ok) throw new Error(await r.text());
   return await r.json();
 }
 
-function renderDetail(p){
-  detail.innerHTML = `<b>MapKey:</b> ${p.map_key}<br>`+
-    `<b>坐标:</b> 星系(${p.galaxy_x},${p.galaxy_y}) / 恒星系(${p.star_system_x},${p.star_system_y}) / 星球(${p.planet_x},${p.planet_y})<br>`+
-    `<b>类型:</b> ${p.planet_type} / ${p.star_type}<br>`+
-    `<b>昼夜:</b> ${p.seconds_for_a_day}s  <b>四季:</b> ${p.days_for_a_year}天  <b>月相:</b> ${p.days_for_a_month}天  <b>四季月相:</b> ${p.month_for_a_year}<br>`+
-    `<b>大小:</b> ${p.planet_size}  <b>矿物稀疏度:</b> ${p.mineral_density}`;
-}
+async function loadList(search=''){
+  list.innerHTML = '<div class="hint">加载中...</div>';
 
-function renderTable(rows){
-  currentRows = rows.slice();
-  const cols = ['galaxy_x','galaxy_y','star_system_x','star_system_y','planet_x','planet_y','planet_type','star_type','seconds_for_a_day','days_for_a_year','days_for_a_month','month_for_a_year','planet_size','mineral_density','map_key'];
-
-  const sorted = rows.slice().sort((a,b)=>{
-    if (a[currentSort] === b[currentSort]) return 0;
-    return sortDesc ? (a[currentSort] > b[currentSort] ? -1 : 1) : (a[currentSort] > b[currentSort] ? 1 : -1);
-  });
-
-  const thead = '<thead><tr>'+cols.map(c=>`<th data-k="${c}">${c}${currentSort===c?(sortDesc?'▼':'▲'):''}</th>`).join('')+'</tr></thead>';
-  const tbody = '<tbody>'+sorted.map(r=>'<tr>'+cols.map(c=>`<td>${r[c]}</td>`).join('')+'</tr>').join('')+'</tbody>';
-  tbl.innerHTML = thead + tbody;
-
-  for (const th of tbl.querySelectorAll('th')) {
-    th.onclick = ()=>{
-      const k = th.getAttribute('data-k');
-      if (currentSort === k) sortDesc = !sortDesc; else { currentSort = k; sortDesc = true; }
-      renderTable(currentRows);
+  if (state.level === 'galaxy') {
+    breadcrumb.textContent = '宇宙 / 星系列表';
+    const rows = await getJson(`${API}/galaxies?sort_key=${state.sort_key}&desc=${state.desc?1:0}&search=${encodeURIComponent(search)}`);
+    list.innerHTML = '';
+    for (const r of rows){
+      const div = document.createElement('div');
+      div.className = 'node';
+      div.textContent = `星系 ${r.x},${r.y} · 星球 ${r.planet_count}`;
+      div.onclick = async ()=>{
+        state.level = 'system';
+        state.gx = r.x; state.gy = r.y;
+        state.sort_key = 'x';
+        setSortOptions('system');
+        const infoData = await getJson(`${API}/galaxy_info?gx=${r.x}&gy=${r.y}`);
+        renderInfo(infoData);
+        await loadList('');
+      };
+      list.appendChild(div);
     }
+    return;
+  }
+
+  if (state.level === 'system') {
+    breadcrumb.textContent = `宇宙 / 星系(${state.gx},${state.gy}) / 恒星系列表`;
+    const rows = await getJson(`${API}/systems?gx=${state.gx}&gy=${state.gy}&sort_key=${state.sort_key}&desc=${state.desc?1:0}&search=${encodeURIComponent(search)}`);
+    list.innerHTML = '';
+    for (const r of rows){
+      const div = document.createElement('div');
+      div.className = 'node';
+      div.textContent = `恒星系 ${r.x},${r.y} · ${r.star_type} · 星球 ${r.planet_count}`;
+      div.onclick = async ()=>{
+        state.level = 'planet';
+        state.sx = r.x; state.sy = r.y;
+        state.sort_key = 'planet_x';
+        setSortOptions('planet');
+        const infoData = await getJson(`${API}/system_info?gx=${state.gx}&gy=${state.gy}&sx=${r.x}&sy=${r.y}`);
+        renderInfo(infoData);
+        await loadList('');
+      };
+      list.appendChild(div);
+    }
+    return;
+  }
+
+  breadcrumb.textContent = `宇宙 / 星系(${state.gx},${state.gy}) / 恒星系(${state.sx},${state.sy}) / 行星列表`;
+  const rows = await getJson(`${API}/planets?gx=${state.gx}&gy=${state.gy}&sx=${state.sx}&sy=${state.sy}&sort_key=${state.sort_key}&desc=${state.desc?1:0}`);
+  list.innerHTML = '';
+  for (const p of rows){
+    const div = document.createElement('div');
+    div.className = 'node';
+    div.textContent = `行星 ${p.planet_x},${p.planet_y} · ${p.planet_type} · 大小 ${p.planet_size}`;
+    div.onclick = ()=> renderInfo(p);
+    list.appendChild(div);
   }
 }
 
-async function refreshStats(){
-  const s = await getJson(`${API}/stats`);
-  stats.textContent = `缓存行星 ${s.cached_planets} | 恒星系 ${s.cached_star_systems} | 星系 ${s.cached_galaxies}`;
+async function init() {
+  const app = await getJson(`${API}/app_info`);
+  info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
+
+  setSortOptions('galaxy');
+  await loadList('');
 }
 
-async function loadQuery(){
-  const q = encodeURIComponent(document.getElementById('q').value || '');
-  const pt = encodeURIComponent(ptype.value || '全部');
-  const sortBy = encodeURIComponent(document.getElementById('sort').value || 'planet_size');
-  const data = await getJson(`${API}/query?q=${q}&planet_type=${pt}&sort_by=${sortBy}&page=1&page_size=3000`);
-  renderTable(data.rows);
-  await refreshStats();
-}
-
-async function buildTree(){
-  tree.innerHTML = '<div class="hint">加载星系列表中...</div>';
-  const galaxies = await getJson(`${API}/galaxies`);
-  tree.innerHTML = '';
-
-  for (const g of galaxies){
-    const gNode = document.createElement('div');
-    gNode.className='node';
-    gNode.textContent=`星系 ${g.x},${g.y}`;
-
-    const gSub = document.createElement('div');
-    gSub.className='sub';
-    gSub.dataset.loaded = '0';
-
-    gNode.onclick = async ()=>{
-      if (gSub.dataset.loaded === '0'){
-        gSub.innerHTML = '<div class="hint">加载恒星系...</div>';
-        const systems = await getJson(`${API}/systems?gx=${g.x}&gy=${g.y}`);
-        gSub.innerHTML = '';
-        for (const s of systems){
-          const sNode = document.createElement('div');
-          sNode.className='node';
-          sNode.textContent=`恒星系 ${s.x},${s.y} (${s.star_type})`;
-
-          const sSub = document.createElement('div');
-          sSub.className='sub';
-          sSub.dataset.loaded='0';
-
-          sNode.onclick = async (ev)=>{
-            ev.stopPropagation();
-            if (sSub.dataset.loaded === '0'){
-              sSub.innerHTML = '<div class="hint">加载行星...</div>';
-              const planets = await getJson(`${API}/planets?gx=${g.x}&gy=${g.y}&sx=${s.x}&sy=${s.y}`);
-              sSub.innerHTML = '';
-              for (const p of planets){
-                const pNode = document.createElement('div');
-                pNode.className='node';
-                pNode.textContent=`星球 ${p.planet_x},${p.planet_y} ${p.planet_type}`;
-                pNode.onclick = (e)=>{ e.stopPropagation(); renderDetail(p); };
-                sSub.appendChild(pNode);
-              }
-              sSub.dataset.loaded='1';
-              await loadQuery();
-            }
-            sSub.style.display = sSub.style.display === 'none' ? 'block' : 'none';
-          };
-
-          gSub.appendChild(sNode);
-          gSub.appendChild(sSub);
-        }
-        gSub.dataset.loaded = '1';
-      }
-      gSub.style.display = gSub.style.display === 'none' ? 'block' : 'none';
-    };
-
-    tree.appendChild(gNode);
-    tree.appendChild(gSub);
-  }
-
-  await refreshStats();
-}
-
-document.getElementById('apply').onclick = loadQuery;
-document.getElementById('findByMapKey').onclick = async ()=>{
-  try {
-    const k = encodeURIComponent(mapKey.value.trim());
-    const p = await getJson(`${API}/planet?map_key=${k}`);
-    renderDetail(p);
-    await loadQuery();
-  } catch (e){
-    detail.textContent = '定位失败: ' + e;
-  }
+document.getElementById('sortKey').onchange = async (e)=>{
+  state.sort_key = e.target.value;
+  await loadList(document.getElementById('coordSearch').value.trim());
 };
 
-buildTree();
+document.getElementById('sortDirBtn').onclick = async ()=>{
+  state.desc = !state.desc;
+  sortDirIcon.className = state.desc ? 'bi bi-sort-down' : 'bi bi-sort-up';
+  await loadList(document.getElementById('coordSearch').value.trim());
+};
+
+document.getElementById('searchBtn').onclick = async ()=>{
+  await loadList(document.getElementById('coordSearch').value.trim());
+};
+
+document.getElementById('backBtn').onclick = async ()=>{
+  if (state.level === 'planet') {
+    state.level = 'system';
+    state.sort_key = 'x';
+    setSortOptions('system');
+    renderInfo(await getJson(`${API}/galaxy_info?gx=${state.gx}&gy=${state.gy}`));
+  } else if (state.level === 'system') {
+    state.level = 'galaxy';
+    state.gx = null; state.gy = null;
+    state.sort_key = 'x';
+    setSortOptions('galaxy');
+    const app = await getJson(`${API}/app_info`);
+    info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${app.galaxy_count} · 恒星系: ${app.system_count} · 行星: ${app.planet_count}<br>加载耗时: ${app.preload_seconds}s`;
+  }
+  state.desc = false;
+  sortDirIcon.className = 'bi bi-sort-up';
+  await loadList('');
+};
+
+init();
 </script>
 </body>
 </html>
@@ -537,7 +658,7 @@ buildTree();
 
 
 class AppHTTP(BaseHTTPRequestHandler):
-    service: UniverseService = UniverseService()
+    service = UniverseService()
 
     def _json(self, data: object, status: int = 200) -> None:
         raw = json.dumps(data, ensure_ascii=False).encode("utf-8")
@@ -564,31 +685,49 @@ class AppHTTP(BaseHTTPRequestHandler):
             if path == "/":
                 self._html(HTML)
                 return
+            if path == "/api/app_info":
+                self._json(self.service.app_info())
+                return
             if path == "/api/galaxies":
-                self._json(self.service.galaxies())
-                return
-            if path == "/api/systems":
-                self._json(self.service.star_systems(int(params["gx"]), int(params["gy"])))
-                return
-            if path == "/api/planets":
-                self._json(self.service.planets(int(params["gx"]), int(params["gy"]), int(params["sx"]), int(params["sy"])))
-                return
-            if path == "/api/planet":
-                self._json(self.service.find_planet(params["map_key"]))
-                return
-            if path == "/api/query":
                 self._json(
-                    self.service.query_loaded(
-                        params.get("q", ""),
-                        params.get("planet_type", "全部"),
-                        params.get("sort_by", "planet_size"),
-                        int(params.get("page", "1")),
-                        int(params.get("page_size", "1000")),
+                    self.service.list_galaxies(
+                        sort_key=params.get("sort_key", "x"),
+                        desc=params.get("desc", "0") == "1",
+                        search=params.get("search", ""),
                     )
                 )
                 return
-            if path == "/api/stats":
-                self._json(self.service.stats())
+            if path == "/api/galaxy_info":
+                self._json(self.service.galaxy_info(int(params["gx"]), int(params["gy"])))
+                return
+            if path == "/api/systems":
+                self._json(
+                    self.service.list_systems(
+                        int(params["gx"]),
+                        int(params["gy"]),
+                        sort_key=params.get("sort_key", "x"),
+                        desc=params.get("desc", "0") == "1",
+                        search=params.get("search", ""),
+                    )
+                )
+                return
+            if path == "/api/system_info":
+                self._json(self.service.system_info(int(params["gx"]), int(params["gy"]), int(params["sx"]), int(params["sy"])))
+                return
+            if path == "/api/planets":
+                self._json(
+                    self.service.list_planets(
+                        int(params["gx"]),
+                        int(params["gy"]),
+                        int(params["sx"]),
+                        int(params["sy"]),
+                        sort_key=params.get("sort_key", "planet_x"),
+                        desc=params.get("desc", "0") == "1",
+                    )
+                )
+                return
+            if path == "/api/planet":
+                self._json(self.service.planet_info(params["map_key"]))
                 return
             self._json({"error": "not found"}, status=404)
         except Exception as e:
@@ -596,6 +735,8 @@ class AppHTTP(BaseHTTPRequestHandler):
 
 
 def run_server(port: int = 8765) -> ThreadingHTTPServer:
+    verify_samples()
+    AppHTTP.service.preload_all()
     server = ThreadingHTTPServer(("127.0.0.1", port), AppHTTP)
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
@@ -603,12 +744,11 @@ def run_server(port: int = 8765) -> ThreadingHTTPServer:
 
 
 def run_app() -> None:
-    verify_samples()
     server = run_server(8765)
     try:
         import webview
     except Exception:
-        print("验证通过，但未安装 pywebview；可直接打开 http://127.0.0.1:8765")
+        print("验证通过，且已预加载全部数据。未安装 pywebview；可直接打开 http://127.0.0.1:8765")
         try:
             while True:
                 threading.Event().wait(3600)
@@ -626,6 +766,7 @@ def run_app() -> None:
 if __name__ == "__main__":
     if not os.environ.get("DISPLAY") and os.name != "nt":
         verify_samples()
-        print("验证通过（当前无图形环境，跳过 Edge WebView 启动）")
+        AppHTTP.service.preload_all()
+        print("验证通过（当前无图形环境，已预加载全部数据，跳过 Edge WebView 启动）")
     else:
         run_app()
