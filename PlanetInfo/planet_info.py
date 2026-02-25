@@ -1475,18 +1475,14 @@ def run_app() -> None:
     loading_window = None
 
     def bootstrap():
+        wait_http_ready(15.0)
         AppHTTP.service.ensure_preload_started()
         while not AppHTTP.service.preloaded:
             time.sleep(0.2)
 
         def open_main_window() -> None:
             nonlocal loading_window
-            try:
-                if loading_window is not None:
-                    loading_window.destroy()
-            except Exception:
-                pass
-            create_window_compat(
+            main_window = create_window_compat(
                 webview,
                 "Weathering PlanetInfo",
                 f"{base_url}/?ready=1",
@@ -1495,11 +1491,18 @@ def run_app() -> None:
                 resizable=True,
                 icon=icon_path,
             )
+            try:
+                if loading_window is not None and hasattr(loading_window, "hide"):
+                    loading_window.hide()
+                elif loading_window is not None and os.name != "nt":
+                    loading_window.destroy()
+            except Exception as exc:
+                print(f"[PlanetInfo] 关闭加载窗口时忽略异常: {exc}")
+            return main_window
 
         open_main_window()
 
     try:
-        wait_http_ready()
         loading_window = create_window_compat(
             webview,
             "Weathering PlanetInfo",
