@@ -278,9 +278,20 @@ class UniverseService:
         }
 
     def preload_all(self) -> None:
+        wait_thread: Optional[threading.Thread] = None
         with self._preload_lock:
             if self.preloaded:
                 return
+            if self.preloading and self._preload_thread is not None and self._preload_thread is not threading.current_thread():
+                wait_thread = self._preload_thread
+            else:
+                self.preloading = True
+                self._preload_thread = threading.current_thread()
+
+        if wait_thread is not None:
+            wait_thread.join()
+            return
+
         start = time.time()
         print("[PlanetInfo] 开始预加载宇宙数据...")
 
@@ -356,6 +367,7 @@ class UniverseService:
 
         self.preloaded = True
         self.preloading = False
+        self._preload_thread = None
         self.preload_seconds = time.time() - start
         print(
             f"[PlanetInfo] 预加载完成: 星系={len(self.galaxies)}, 恒星系={len(self.systems)}, "
@@ -463,17 +475,16 @@ HTML = """<!doctype html>
   <link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css\">
   <script type=\"module\" src=\"https://unpkg.com/@fluentui/web-components@2.6.1/dist/web-components.min.js\"></script>
   <style>
-    :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; --accent:#54a3ff; }
+    :root { --bg:#071025; --panel:#0f1a30; --line:#24385a; --txt:#e8f0ff; --sub:#8dc6ff; }
     * { box-sizing:border-box; }
-    body { margin:0; background:radial-gradient(circle at 10% 10%, #15284c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; }
-    .loading-overlay { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; background:linear-gradient(180deg,#020617,#071025); z-index:99; }
-    .loading-card { width:min(760px,90vw); background:rgba(15,26,48,.92); border:1px solid var(--line); border-radius:16px; padding:26px; box-shadow:0 20px 70px rgba(0,0,0,.35); }
-    .loading-title { margin:0 0 10px; color:var(--sub); font-size:22px; letter-spacing:.08em; text-transform:uppercase; }
-    .loading-sub { margin:0 0 14px; color:#b4d8ff; }
-    .progress { height:12px; width:100%; border-radius:999px; border:1px solid var(--line); overflow:hidden; background:#0b1326; }
-    .bar { height:100%; width:2%; background:linear-gradient(90deg,#3b82f6,#60a5fa,#93c5fd); animation:pulse 1.4s infinite alternate; }
-    @keyframes pulse { from { filter:brightness(.7); } to { filter:brightness(1.15); } }
-    .app { display:grid; grid-template-columns: 460px 1fr; height:100vh; padding:14px; gap:14px; }
+    body { margin:0; background:radial-gradient(circle at 10% 10%, #15284c 0%, var(--bg) 45%); color:var(--txt); font-family:Segoe UI,system-ui,sans-serif; overflow:hidden; }
+    .titlebar { height:44px; display:flex; align-items:center; justify-content:space-between; padding:0 0 0 12px; border-bottom:1px solid var(--line); background:#0b162d; -webkit-app-region:drag; user-select:none; }
+    .titlebar .name { font-weight:600; color:#cfe6ff; }
+    .window-controls { display:flex; -webkit-app-region:no-drag; }
+    .window-btn { width:48px; height:44px; border:0; background:transparent; color:#d9e9ff; cursor:pointer; font-size:14px; }
+    .window-btn:hover { background:#1e3257; }
+    .window-btn.close:hover { background:#be123c; }
+    .app { display:grid; grid-template-columns: 420px 1fr; height:calc(100vh - 44px); padding:12px; gap:12px; }
     .panel { overflow:auto; padding:14px; background:rgba(15,26,48,.9); border:1px solid var(--line); border-radius:14px; }
     .title { color:var(--sub); margin:0 0 12px; font-size:16px; font-weight:700; letter-spacing:.04em; }
     .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; }
@@ -484,20 +495,19 @@ HTML = """<!doctype html>
     .pill { display:inline-block; margin:4px 6px 4px 0; padding:5px 9px; border:1px solid var(--line); border-radius:999px; background:#132748; }
     .btn-icon { border:1px solid var(--line); border-radius:8px; background:#132746; color:var(--txt); padding:7px 10px; cursor:pointer; }
     .btn-icon:hover { background:#1b3763; }
-    .app.hidden { display:none; }
   </style>
 </head>
 <body>
-<div id=\"loadingOverlay\" class=\"loading-overlay\">
-  <div class=\"loading-card\">
-    <h2 class=\"loading-title\">Weathering Universe Initialization</h2>
-    <p id=\"loadingText\" class=\"loading-sub\">形式化流程正在进行：准备读取全部星球数据并建立索引...</p>
-    <div class=\"progress\"><div id=\"loadingBar\" class=\"bar\"></div></div>
-    <p id=\"loadingStats\" class=\"hint\" style=\"margin-top:10px\">等待后端启动...</p>
+<header class=\"titlebar\">
+  <div class=\"name\">Weathering PlanetInfo</div>
+  <div class=\"window-controls\">
+    <button class=\"window-btn\" id=\"minBtn\"><i class=\"bi bi-dash-lg\"></i></button>
+    <button class=\"window-btn\" id=\"maxBtn\"><i class=\"bi bi-square\"></i></button>
+    <button class=\"window-btn close\" id=\"closeBtn\"><i class=\"bi bi-x-lg\"></i></button>
   </div>
-</div>
+</header>
 
-<div id=\"app\" class=\"app hidden\">
+<div id=\"app\" class=\"app\">
   <aside class=\"panel\">
     <div>
       <h3 class=\"title\">导航</h3>
@@ -507,7 +517,7 @@ HTML = """<!doctype html>
       </div>
 
       <div id=\"searchBlock\" class=\"row\">
-        <fluent-text-field id=\"coordSearch\" placeholder=\"输入 x,y 直接进入当前层级\" style=\"width:280px\"></fluent-text-field>
+        <fluent-text-field id=\"coordSearch\" placeholder=\"x,y\" style=\"width:160px\"></fluent-text-field>
         <button id=\"searchBtn\" class=\"btn-icon\"><i class=\"bi bi-search\"></i></button>
       </div>
 
@@ -530,14 +540,21 @@ HTML = """<!doctype html>
 
 <script>
 const API = '/api';
-const appRoot = document.getElementById('app');
-const loadingOverlay = document.getElementById('loadingOverlay');
-const loadingStats = document.getElementById('loadingStats');
 const info = document.getElementById('info');
 const list = document.getElementById('list');
 const breadcrumb = document.getElementById('breadcrumb');
 const sortKey = document.getElementById('sortKey');
 const sortDirIcon = document.getElementById('sortDirIcon');
+
+function callWindowApi(action){
+  if (window.pywebview && window.pywebview.api && window.pywebview.api[action]) {
+    window.pywebview.api[action]();
+  }
+}
+
+document.getElementById('minBtn').onclick = ()=>callWindowApi('minimize');
+document.getElementById('maxBtn').onclick = ()=>callWindowApi('toggle_maximize');
+document.getElementById('closeBtn').onclick = ()=>callWindowApi('close');
 
 let state = {
   level: 'galaxy',
@@ -723,25 +740,9 @@ async function jumpBySearch(){
   await loadList('');
 }
 
-async function waitForPreload(){
-  let frame = 0;
-  while (true) {
-    const status = await getJson(`${API}/preload_status`);
-    loadingStats.textContent = `星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
-    frame = (frame + 1) % 100;
-    document.getElementById('loadingBar').style.width = `${Math.max(3, frame)}%`;
-    if (status.ready) {
-      loadingOverlay.style.display = 'none';
-      appRoot.classList.remove('hidden');
-      info.innerHTML = `<b>全部数据已加载完成</b><br>星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}<br>加载耗时: ${status.preload_seconds}s`;
-      return;
-    }
-    await new Promise(r => setTimeout(r, 500));
-  }
-}
-
 async function init() {
-  await waitForPreload();
+  const status = await getJson(`${API}/app_info`);
+  info.innerHTML = `<b>已加载</b><br>星系: ${status.galaxy_count} · 恒星系: ${status.system_count} · 行星: ${status.planet_count}`;
   setSortOptions('galaxy');
   await loadList('');
 }
@@ -883,6 +884,61 @@ def run_server(port: int = 8765) -> ThreadingHTTPServer:
     return server
 
 
+SPLASH_HTML = """<!doctype html>
+<html lang=\"zh-CN\"><head><meta charset=\"utf-8\" />
+<style>
+  body { margin:0; font-family:Segoe UI,system-ui,sans-serif; background:linear-gradient(180deg,#020617,#071025); color:#dbeafe; overflow:hidden; }
+  .titlebar { height:40px; display:flex; justify-content:space-between; align-items:center; padding-left:12px; border-bottom:1px solid #24385a; -webkit-app-region:drag; }
+  .ctrl { display:flex; -webkit-app-region:no-drag; }
+  .b { width:42px; height:40px; border:0; background:transparent; color:#dbeafe; cursor:pointer; }
+  .b:hover { background:#1e3257; }
+  .b.close:hover { background:#be123c; }
+  .card { margin:26px; padding:18px; border:1px solid #24385a; border-radius:12px; background:rgba(15,26,48,.85); }
+  .title { font-size:18px; margin:0 0 8px; color:#93c5fd; }
+  .hint { font-size:13px; color:#bfdbfe; margin:0 0 10px; }
+  .progress { height:10px; border-radius:999px; border:1px solid #24385a; overflow:hidden; }
+  .bar { height:100%; width:5%; background:linear-gradient(90deg,#3b82f6,#93c5fd); animation:pulse 1.2s infinite alternate; }
+  @keyframes pulse { from { filter:brightness(.8);} to { filter:brightness(1.2);} }
+</style>
+</head>
+<body>
+<div class=\"titlebar\">加载中
+  <div class=\"ctrl\">
+    <button class=\"b\" onclick=\"window.pywebview?.api?.minimize()\">_</button>
+    <button class=\"b close\" onclick=\"window.pywebview?.api?.close()\">×</button>
+  </div>
+</div>
+<div class=\"card\">
+  <h2 class=\"title\">Weathering Universe Initialization</h2>
+  <p class=\"hint\">正在执行形式化预加载流程：星系、恒星系、行星索引构建中。</p>
+  <div class=\"progress\"><div class=\"bar\"></div></div>
+</div>
+</body></html>
+"""
+
+
+class WindowApi:
+    def __init__(self, get_window) -> None:
+        self._get_window = get_window
+        self._maximized = False
+
+    def minimize(self) -> None:
+        self._get_window().minimize()
+
+    def toggle_maximize(self) -> None:
+        w = self._get_window()
+        if self._maximized and hasattr(w, "restore"):
+            w.restore()
+            self._maximized = False
+            return
+        if hasattr(w, "maximize"):
+            w.maximize()
+            self._maximized = True
+
+    def close(self) -> None:
+        self._get_window().destroy()
+
+
 def run_app() -> None:
     server = run_server(8765)
     try:
@@ -896,9 +952,46 @@ def run_app() -> None:
             server.shutdown()
         return
 
+    icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Assets", "Sprites", "Sprites", "icon.png"))
+    splash_ref: Dict[str, object] = {}
+    main_ref: Dict[str, object] = {}
+
+    def start_main_window() -> None:
+        AppHTTP.service.ensure_preload_started()
+        while not AppHTTP.service.preloaded:
+            time.sleep(0.2)
+
+        splash = splash_ref.get("window")
+        if splash is not None:
+            splash.destroy()
+
+        main_api = WindowApi(lambda: main_ref["window"])
+        main_ref["window"] = webview.create_window(
+            "Weathering PlanetInfo",
+            "http://127.0.0.1:8765",
+            width=1320,
+            height=860,
+            resizable=False,
+            frameless=True,
+            easy_drag=False,
+            js_api=main_api,
+            icon=icon_path,
+        )
+
     try:
-        webview.create_window("Weathering Universe Explorer", "http://127.0.0.1:8765", width=1500, height=920)
-        webview.start(gui="edgechromium", debug=False)
+        splash_api = WindowApi(lambda: splash_ref["window"])
+        splash_ref["window"] = webview.create_window(
+            "PlanetInfo Loading",
+            html=SPLASH_HTML,
+            width=560,
+            height=320,
+            resizable=False,
+            frameless=True,
+            easy_drag=False,
+            js_api=splash_api,
+            icon=icon_path,
+        )
+        webview.start(start_main_window, splash_ref["window"], gui="edgechromium", debug=False)
     finally:
         server.shutdown()
 
