@@ -35,3 +35,23 @@ print(r)
 all_planets = planets_in_star_system((1, 4), (14, 93))
 ranked = sort_planets(all_planets, by="mineral_density", reverse=True)
 ```
+
+## 扩展开发手册（草案）
+
+- 见 `PlanetInfo/AddonModDevelopmentManual.md`（中文版）。该文档基于当前 Unity 项目结构调研，提出面向 addon/mod 的标准化方案与迁移路径。
+
+## 跨语言迁移评估
+
+- 见 `PlanetInfo/跨语言迁移评估手册.md`。该文档评估了在忽略 Shader 等不影响核心流程的 QoL 表现后，迁移到 Python/Java 的可行性与实施路线。
+
+## Java 迁移核心逻辑逐文件文档
+
+- 目录：`PlanetInfo/Java迁移核心逻辑文档/`
+- 索引：`PlanetInfo/Java迁移核心逻辑文档/INDEX.md`
+- 说明：对核心逻辑相关 C# 文件进行一一映射，生成同名 Markdown 文档（API/dev docs 级别），用于后续逐文件 Java 原型实现与对拍测试。
+
+## Java 原型实现与生成行为测试
+
+- 目录：`PlanetInfo/Java/`
+- 说明：提供独立于 Unity 的 Java 原型，覆盖银河系/恒星系/星球 map 与 attributes 生成核心逻辑，并附带可执行测试。
+- 快速运行：见 `PlanetInfo/Java/README.md`。
