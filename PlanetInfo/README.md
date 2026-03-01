@@ -49,3 +49,9 @@ ranked = sort_planets(all_planets, by="mineral_density", reverse=True)
 - 目录：`PlanetInfo/Java迁移核心逻辑文档/`
 - 索引：`PlanetInfo/Java迁移核心逻辑文档/INDEX.md`
 - 说明：对核心逻辑相关 C# 文件进行一一映射，生成同名 Markdown 文档（API/dev docs 级别），用于后续逐文件 Java 原型实现与对拍测试。
+
+## Java 原型实现与生成行为测试
+
+- 目录：`PlanetInfo/Java/`
+- 说明：提供独立于 Unity 的 Java 原型，覆盖银河系/恒星系/星球 map 与 attributes 生成核心逻辑，并附带可执行测试。
+- 快速运行：见 `PlanetInfo/Java/README.md`。
