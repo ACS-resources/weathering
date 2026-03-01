@@ -118,9 +118,9 @@ public final class GenerationParityTest {
     }
 
     private static void testKnownHierarchyCoordinates() {
-        long universeHash = Hashing.hashString("Weathering.MapOfUniverse");
+        long universeHash = Hashing.hashString("Weathering.MapOfUniverse#");
         long universeTileHash = Hashing.hash(1, 4, 100, 100, (int) universeHash);
-        require(universeTileHash != 0, "Universe tile hash at (1,4) should be deterministic and non-zero");
+        require(CelestialGeneration.isGalaxyTile(universeTileHash), "Expected galaxy at universe (1,4)");
 
         long galaxyHash = Hashing.hashString("Weathering.MapOfGalaxy#=1,4");
         long galaxyTileHash = Hashing.hash(14, 93, 100, 100, (int) galaxyHash);
@@ -134,6 +134,20 @@ public final class GenerationParityTest {
             || body == CelestialGeneration.BodyType.GasGiant
             || body == CelestialGeneration.BodyType.GasGiantRinged;
         require(isPlanetLike, "Expected planet-like body at star-system tile (24,31)");
+
+        int planetLikeBodies = 0;
+        for (int y = 0; y < 32; y++) {
+            for (int x = 0; x < 32; x++) {
+                long tileHash = Hashing.hash(x, y, 32, 32, (int) starSystemHash);
+                var classification = CelestialGeneration.classifyBody(tileHash, starSystemHash, x, y, stars);
+                if (classification.name().startsWith("Planet")
+                    || classification == CelestialGeneration.BodyType.GasGiant
+                    || classification == CelestialGeneration.BodyType.GasGiantRinged) {
+                    planetLikeBodies++;
+                }
+            }
+        }
+        require(planetLikeBodies == 16, "Expected 16 planet-like bodies in star system (1,4)->(14,93)");
     }
 
     private static void require(boolean condition, String message) {

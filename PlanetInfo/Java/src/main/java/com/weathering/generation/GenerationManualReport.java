@@ -21,25 +21,28 @@ public final class GenerationManualReport {
     private static final String ANSI_FG_LIGHT = "\u001B[38;5;255m";
 
     private static final String STARTING_PLANET_MAP_KEY = "Weathering.MapOfPlanet#=1,4=14,93=24,31";
+    private static final String UNIVERSE_MAP_KEY = "Weathering.MapOfUniverse#";
+    private static final String GALAXY_MAP_KEY = "Weathering.MapOfGalaxy#=1,4";
+    private static final String STAR_SYSTEM_MAP_KEY = "Weathering.MapOfStarSystem#=1,4=14,93";
 
     private GenerationManualReport() {}
 
     public static void main(String[] args) {
-        long universeMapHash = 123456789L;
-        long galaxyMapHash = 987654321L;
-        long starSystemMapHash = 3141592653L;
-        long planetMapHash = 99887766L;
-        long planetSelfMapHash = 1234567890L;
+        long universeMapHash = Hashing.hashString(UNIVERSE_MAP_KEY);
+        long galaxyMapHash = Hashing.hashString(GALAXY_MAP_KEY);
+        long starSystemMapHash = Hashing.hashString(STAR_SYSTEM_MAP_KEY);
+        long planetMapHash = Hashing.hashString(STARTING_PLANET_MAP_KEY);
+        long planetSelfMapHash = Hashing.hashString(selfMapKeyIndex(STARTING_PLANET_MAP_KEY));
 
         printKnownHierarchyCheck();
         printUniverseReport(universeMapHash);
         printGalaxyReport(galaxyMapHash);
         printStarSystemReport(starSystemMapHash);
         printPlanetReport(planetMapHash, planetSelfMapHash);
-        printStartingStarPlanetReport(STARTING_PLANET_MAP_KEY, 64);
+        printStartingStarPlanetReport(STARTING_PLANET_MAP_KEY);
     }
 
-    private static void printStartingStarPlanetReport(String mapKey, int sampleSize) {
+    private static void printStartingStarPlanetReport(String mapKey) {
         String selfIndex = selfMapKeyIndex(mapKey);
         long mapHash = Hashing.hashString(mapKey);
         long selfMapHash = Hashing.hashString(selfIndex);
@@ -54,28 +57,21 @@ public final class GenerationManualReport {
         System.out.printf("Profile: size=%d mineralDensity=%d baseAltitudeNoiseSize=%d baseMoistureNoiseSize=%d%n",
             profile.size(), profile.mineralDensity(), profile.baseAltitudeNoiseSize(), profile.baseMoistureNoiseSize());
 
-        System.out.printf("%nTerrain sample (%dx%d, letters: S=Sea P=Plain F=Forest M=Mountain)%n", sampleSize, sampleSize);
-        printTerrainLetterGrid(map, sampleSize);
-        System.out.printf("%nANSI terrain+ore sample (%dx%d, ore overlays mountains)%n", sampleSize, sampleSize);
+        System.out.printf("%nTerrain full map (%dx%d, letters: S=Sea P=Plain F=Forest M=Mountain)%n", map.width(), map.height());
+        printTerrainLetterGrid(map);
+        System.out.printf("%nANSI terrain+ore full map (%dx%d, ore overlays mountains)%n", map.width(), map.height());
         System.out.println("Plain=green, Forest=dark green, Mountain=light brown, Sea=aqua");
         System.out.println("Ore overlay on mountains: Coal=black Iron=silver Gold=gold Bauxite=taupe");
-        printTerrainAnsiGrid(map, sampleSize);
+        printTerrainAnsiGrid(map);
         System.out.println();
     }
 
-    private static void printTerrainAnsiGrid(PlanetGeneration.PlanetMap map, int sampleSize) {
-        if (map.width() < sampleSize || map.height() < sampleSize) {
-            throw new IllegalArgumentException("Planet size is smaller than requested sample size");
-        }
-        int xOffset = (map.width() - sampleSize) / 2;
-        int yOffset = (map.height() - sampleSize) / 2;
-        for (int y = 0; y < sampleSize; y++) {
-            StringBuilder row = new StringBuilder(sampleSize * 20);
-            for (int x = 0; x < sampleSize; x++) {
-                int mx = x + xOffset;
-                int my = y + yOffset;
-                var terrain = map.terrainTypes()[mx][my];
-                var ore = map.oreTypes()[mx][my];
+    private static void printTerrainAnsiGrid(PlanetGeneration.PlanetMap map) {
+        for (int y = 0; y < map.height(); y++) {
+            StringBuilder row = new StringBuilder(map.width() * 20);
+            for (int x = 0; x < map.width(); x++) {
+                var terrain = map.terrainTypes()[x][y];
+                var ore = map.oreTypes()[x][y];
                 row.append(renderAnsiCell(terrain, ore));
             }
             row.append(ANSI_RESET);
@@ -101,9 +97,9 @@ public final class GenerationManualReport {
     }
 
     private static void printKnownHierarchyCheck() {
-        String universeMapKey = "Weathering.MapOfUniverse";
-        String galaxyMapKey = "Weathering.MapOfGalaxy#=1,4";
-        String planetSystemMapKey = "Weathering.MapOfStarSystem#=1,4=14,93";
+        String universeMapKey = UNIVERSE_MAP_KEY;
+        String galaxyMapKey = GALAXY_MAP_KEY;
+        String planetSystemMapKey = STAR_SYSTEM_MAP_KEY;
         String planetMapKey = STARTING_PLANET_MAP_KEY;
 
         long universeHash = Hashing.hashString(universeMapKey);
@@ -117,12 +113,28 @@ public final class GenerationManualReport {
         var body = CelestialGeneration.classifyBody(planetTileHash, starSystemHash, 24, 31, stars);
         boolean isPlanetLike = body.name().startsWith("Planet") || body == CelestialGeneration.BodyType.GasGiant || body == CelestialGeneration.BodyType.GasGiantRinged;
 
+        int starTiles = 0;
+        int planetLikeBodies = 0;
+        for (int y = 0; y < 32; y++) {
+            for (int x = 0; x < 32; x++) {
+                long tileHash = Hashing.hash(x, y, 32, 32, (int) starSystemHash);
+                var classification = CelestialGeneration.classifyBody(tileHash, starSystemHash, x, y, stars);
+                if (classification.name().startsWith("Star")) starTiles++;
+                if (classification.name().startsWith("Planet")
+                    || classification == CelestialGeneration.BodyType.GasGiant
+                    || classification == CelestialGeneration.BodyType.GasGiantRinged) {
+                    planetLikeBodies++;
+                }
+            }
+        }
+
         System.out.println("=== Hierarchy Spot Check ===");
         System.out.printf("Universe tile (1,4) in %s -> galaxy=%s (tileHash=%d)%n", universeMapKey,
             CelestialGeneration.isGalaxyTile(universeTileHash), universeTileHash);
         System.out.printf("Galaxy tile (14,93) in %s -> planetSystem=%s (tileHash=%d)%n", galaxyMapKey,
             CelestialGeneration.isStarSystemTile(galaxyTileHash), galaxyTileHash);
         System.out.printf("Body tile (24,31) in %s -> %s (planetLike=%s)%n", planetSystemMapKey, body, isPlanetLike);
+        System.out.printf("Star-system totals in %s -> stars=%d planetLikeBodies=%d%n", planetSystemMapKey, starTiles, planetLikeBodies);
 
         long planetMapHash = Hashing.hashString(planetMapKey);
         long planetSelfMapHash = Hashing.hashString(selfMapKeyIndex(planetMapKey));
@@ -132,16 +144,11 @@ public final class GenerationManualReport {
             planetMapKey, inBounds, inBounds ? map.terrainTypes()[24][31] : "n/a", inBounds ? map.oreTypes()[24][31] : "n/a");
     }
 
-    private static void printTerrainLetterGrid(PlanetGeneration.PlanetMap map, int sampleSize) {
-        if (map.width() < sampleSize || map.height() < sampleSize) {
-            throw new IllegalArgumentException("Planet size is smaller than requested sample size");
-        }
-        int xOffset = (map.width() - sampleSize) / 2;
-        int yOffset = (map.height() - sampleSize) / 2;
-        for (int y = 0; y < sampleSize; y++) {
-            StringBuilder row = new StringBuilder(sampleSize);
-            for (int x = 0; x < sampleSize; x++) {
-                var terrain = map.terrainTypes()[x + xOffset][y + yOffset];
+    private static void printTerrainLetterGrid(PlanetGeneration.PlanetMap map) {
+        for (int y = 0; y < map.height(); y++) {
+            StringBuilder row = new StringBuilder(map.width());
+            for (int x = 0; x < map.width(); x++) {
+                var terrain = map.terrainTypes()[x][y];
                 row.append(terrainToLetter(terrain));
             }
             System.out.println(row);
