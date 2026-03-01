@@ -8,6 +8,7 @@ public final class GenerationParityTest {
         testUniverseAndGalaxyDensity();
         testStarSystemClassification();
         testPlanetProfileAndTerrain();
+        testStartingPlanetKeyGeneration();
         System.out.println("All generation parity checks passed.");
     }
 
@@ -73,6 +74,28 @@ public final class GenerationParityTest {
         }
         require(sea + plain + forest + mountain == map.width() * map.height(), "Terrain coverage mismatch");
         require(sea > 0 && plain > 0 && mountain > 0, "Terrain mix should include sea/plain/mountain");
+    }
+
+
+    private static void testStartingPlanetKeyGeneration() {
+        String mapKey = "Weathering.MapOfPlanet#=1,4=14,93=24,31";
+        String selfIndex = mapKey.substring(mapKey.indexOf('#'));
+
+        long mapHash = Hashing.hashString(mapKey);
+        long selfMapHash = Hashing.hashString(selfIndex);
+        var map = PlanetGeneration.generate(mapHash, selfMapHash, 5);
+
+        require(map.width() >= 64 && map.height() >= 64, "Starting planet map should be large enough for a 64x64 sample");
+
+        int terrainCount = 0;
+        for (int x = 0; x < 64; x++) {
+            for (int y = 0; y < 64; y++) {
+                var terrain = map.terrainTypes()[x][y];
+                require(terrain != null, "Terrain value should never be null");
+                terrainCount++;
+            }
+        }
+        require(terrainCount == 4096, "64x64 starting-star terrain sample size mismatch");
     }
 
     private static void require(boolean condition, String message) {

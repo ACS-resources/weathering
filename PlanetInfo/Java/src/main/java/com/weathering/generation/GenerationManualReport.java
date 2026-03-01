@@ -7,6 +7,8 @@ import java.util.Map;
  * Produces human-checkable generation output for manual inspection.
  */
 public final class GenerationManualReport {
+    private static final String STARTING_PLANET_MAP_KEY = "Weathering.MapOfPlanet#=1,4=14,93=24,31";
+
     private GenerationManualReport() {}
 
     public static void main(String[] args) {
@@ -20,6 +22,60 @@ public final class GenerationManualReport {
         printGalaxyReport(galaxyMapHash);
         printStarSystemReport(starSystemMapHash);
         printPlanetReport(planetMapHash, planetSelfMapHash);
+        printStartingStarPlanetReport(STARTING_PLANET_MAP_KEY, 64);
+    }
+
+    private static void printStartingStarPlanetReport(String mapKey, int sampleSize) {
+        String selfIndex = selfMapKeyIndex(mapKey);
+        long mapHash = Hashing.hashString(mapKey);
+        long selfMapHash = Hashing.hashString(selfIndex);
+
+        var profile = PlanetGeneration.profile(mapHash, selfMapHash);
+        var map = PlanetGeneration.generate(mapHash, selfMapHash, 5);
+
+        System.out.println("=== Starting Star Planet Report ===");
+        System.out.printf("MapKey=%s%n", mapKey);
+        System.out.printf("SelfIndex=%s%n", selfIndex);
+        System.out.printf("MapHash=%d SelfMapHash=%d Size=%dx%d%n", mapHash, selfMapHash, map.width(), map.height());
+        System.out.printf("Profile: size=%d mineralDensity=%d baseAltitudeNoiseSize=%d baseMoistureNoiseSize=%d%n",
+            profile.size(), profile.mineralDensity(), profile.baseAltitudeNoiseSize(), profile.baseMoistureNoiseSize());
+
+        System.out.printf("%nTerrain sample (%dx%d, letters: S=Sea P=Plain F=Forest M=Mountain)%n", sampleSize, sampleSize);
+        printTerrainLetterGrid(map, sampleSize);
+        System.out.println();
+    }
+
+    private static void printTerrainLetterGrid(PlanetGeneration.PlanetMap map, int sampleSize) {
+        if (map.width() < sampleSize || map.height() < sampleSize) {
+            throw new IllegalArgumentException("Planet size is smaller than requested sample size");
+        }
+        int xOffset = (map.width() - sampleSize) / 2;
+        int yOffset = (map.height() - sampleSize) / 2;
+        for (int y = 0; y < sampleSize; y++) {
+            StringBuilder row = new StringBuilder(sampleSize);
+            for (int x = 0; x < sampleSize; x++) {
+                var terrain = map.terrainTypes()[x + xOffset][y + yOffset];
+                row.append(terrainToLetter(terrain));
+            }
+            System.out.println(row);
+        }
+    }
+
+    private static char terrainToLetter(PlanetGeneration.TerrainType terrain) {
+        return switch (terrain) {
+            case TerrainType_Sea -> 'S';
+            case TerrainType_Plain -> 'P';
+            case TerrainType_Forest -> 'F';
+            case TerrainType_Mountain -> 'M';
+        };
+    }
+
+    private static String selfMapKeyIndex(String mapKey) {
+        int index = mapKey.indexOf('#');
+        if (index < 0) {
+            throw new IllegalArgumentException("Invalid map key (missing #): " + mapKey);
+        }
+        return mapKey.substring(index);
     }
 
     private static void printUniverseReport(long mapHash) {
