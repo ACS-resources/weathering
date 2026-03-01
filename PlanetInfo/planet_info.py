@@ -609,13 +609,11 @@ class UniverseService:
             single_planet_score_sum = 0.0
             for p in planets:
                 planet_area = p.planet_size**2
-                abundance = max(p.mineral_density, 1e-9)
-                base_value = (planet_area**0.6) / abundance
-                strategic_bonus = max(0.0, (10 - abundance) / 2) * (planet_area / 5000)
-                single_planet_score_sum += base_value + strategic_bonus
+                abundance = max(p.mineral_density, 1.000000001)
+                single_planet_score_sum += planet_area / ((abundance - 1) ** 2.5)
 
-            system_weight = (planet_count**0.7) / math.log2((avg_area / threshold_t) + 2)
-            score_v = math.log1p(single_planet_score_sum) * system_weight
+            system_weight = math.sqrt(planet_count) / math.log2((avg_area / threshold_t) + 2)
+            score_v = single_planet_score_sum * system_weight * 0.1
             rows.append(
                 {
                     "gx": s["gx"],
