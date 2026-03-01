@@ -35,3 +35,7 @@ print(r)
 all_planets = planets_in_star_system((1, 4), (14, 93))
 ranked = sort_planets(all_planets, by="mineral_density", reverse=True)
 ```
+
+## 扩展开发手册（草案）
+
+- 见 `PlanetInfo/AddonModDevelopmentManual.md`。该文档基于当前 Unity 项目结构调研，提出面向 addon/mod 的标准化方案与迁移路径。
