@@ -7,13 +7,15 @@ public final class PlanetGeneration {
     public enum MoistureType { MoistureDesert, MoistureGrassland, MoistureForest }
     public enum TemperatureType { TemporatureTemporate, TemporatureCold }
     public enum TerrainType { TerrainType_Sea, TerrainType_Plain, TerrainType_Forest, TerrainType_Mountain }
+    public enum OreType { Ore_Coal, Ore_Iron, Ore_Gold, Ore_Bauxite }
 
     public record PlanetProfile(int size, int mineralDensity, int baseAltitudeNoiseSize, int baseMoistureNoiseSize) {}
 
     public record PlanetMap(int width, int height, int[][] altitudes, AltitudeType[][] altitudeTypes,
                             int[][] moistures, MoistureType[][] moistureTypes,
                             int[][] temperatures, TemperatureType[][] temperatureTypes,
-                            TerrainType[][] terrainTypes) {}
+                            TerrainType[][] terrainTypes,
+                            OreType[][] oreTypes) {}
 
     public static int calculatePlanetSize(long selfMapHashCode) {
         return 50 + (int) (selfMapHashCode % 100);
@@ -42,6 +44,7 @@ public final class PlanetGeneration {
         int[][] temperatures = new int[width][height];
         TemperatureType[][] temperatureTypes = new TemperatureType[width][height];
         TerrainType[][] terrainTypes = new TerrainType[width][height];
+        OreType[][] oreTypes = new OreType[width][height];
 
         int autoInc = randomSeed;
         int offset0 = autoInc++;
@@ -87,10 +90,31 @@ public final class PlanetGeneration {
                 temperatures[i][j] = temperature;
                 temperatureTypes[i][j] = getTemperatureType(temperature);
                 terrainTypes[i][j] = deriveTerrain(altitudeTypes[i][j], moistureTypes[i][j], temperatureTypes[i][j]);
+                oreTypes[i][j] = generateOreType(mapHashCode, selfMapHashCode, p.mineralDensity(), i, j, terrainTypes[i][j]);
             }
         }
 
-        return new PlanetMap(width, height, altitudes, altitudeTypes, moistures, moistureTypes, temperatures, temperatureTypes, terrainTypes);
+        return new PlanetMap(width, height, altitudes, altitudeTypes, moistures, moistureTypes, temperatures, temperatureTypes, terrainTypes, oreTypes);
+    }
+
+    static OreType generateOreType(long mapHashCode, long selfMapHashCode, int mineralDensity, int x, int y, TerrainType terrain) {
+        if (terrain != TerrainType.TerrainType_Mountain) {
+            return null;
+        }
+        long oreNoise = Hashing.hash(x, y, 257, 509, (int) Hashing.addSalt(selfMapHashCode ^ mapHashCode, 0x4F52454CL));
+        long oreRoll = Math.floorMod(oreNoise, 100);
+        int spawnChance = Math.min(70, Math.max(15, mineralDensity * 2));
+        if (oreRoll >= spawnChance) {
+            return null;
+        }
+        int oreKind = (int) Math.floorMod(Hashing.hash32(oreNoise), 4);
+        return switch (oreKind) {
+            case 0 -> OreType.Ore_Coal;
+            case 1 -> OreType.Ore_Iron;
+            case 2 -> OreType.Ore_Gold;
+            case 3 -> OreType.Ore_Bauxite;
+            default -> throw new IllegalStateException();
+        };
     }
 
     static AltitudeType getAltitudeType(int altitude) {

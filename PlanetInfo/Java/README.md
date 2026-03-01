@@ -58,14 +58,26 @@ java -cp out com.weathering.generation.GenerationManualReport
 ```
 
 This prints human-checkable reports for:
+- hierarchy spot-check for `universe(1,4) -> galaxy(14,93) -> star-system body(24,31)`,
 - universe galaxy-tile distribution,
 - galaxy star-system-tile distribution,
 - star-system star positions + celestial body histogram,
 - planet profile + attribute ranges + terrain histogram + sample cells,
-- starting-star planet key `Weathering.MapOfPlanet#=1,4=14,93=24,31` with a 64x64 terrain letter map.
+- starting-star planet key `Weathering.MapOfPlanet#=1,4=14,93=24,31` with a 64x64 terrain letter map,
+- ANSI-colored 64x64 terrain+ore grid for visual verification.
 
 Terrain letters:
 - `S` = Sea
 - `P` = Plain
 - `F` = Forest
 - `M` = Mountain
+
+ANSI terrain+ore grid legend:
+- `~` aqua = Sea
+- `.` green = Plain
+- `T` dark green = Forest
+- `^` light brown = Mountain
+- `C` black = Coal ore (overlay on mountain)
+- `I` silver = Iron ore (overlay on mountain)
+- `G` gold = Gold ore (overlay on mountain)
+- `B` taupe = Bauxite ore (overlay on mountain)

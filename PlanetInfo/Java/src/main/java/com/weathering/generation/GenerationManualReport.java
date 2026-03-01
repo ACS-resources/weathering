@@ -7,6 +7,19 @@ import java.util.Map;
  * Produces human-checkable generation output for manual inspection.
  */
 public final class GenerationManualReport {
+    private static final String ANSI_RESET = "\u001B[0m";
+    private static final String ANSI_BG_AQUA = "\u001B[48;5;45m";
+    private static final String ANSI_BG_GRASS = "\u001B[48;5;82m";
+    private static final String ANSI_BG_FOREST = "\u001B[48;5;22m";
+    private static final String ANSI_BG_MOUNTAIN = "\u001B[48;5;94m";
+    private static final String ANSI_BG_COAL = "\u001B[48;5;16m";
+    private static final String ANSI_BG_IRON = "\u001B[48;5;252m";
+    private static final String ANSI_BG_GOLD = "\u001B[48;5;220m";
+    private static final String ANSI_BG_BAUXITE = "\u001B[48;5;137m";
+
+    private static final String ANSI_FG_DARK = "\u001B[38;5;16m";
+    private static final String ANSI_FG_LIGHT = "\u001B[38;5;255m";
+
     private static final String STARTING_PLANET_MAP_KEY = "Weathering.MapOfPlanet#=1,4=14,93=24,31";
 
     private GenerationManualReport() {}
@@ -18,6 +31,7 @@ public final class GenerationManualReport {
         long planetMapHash = 99887766L;
         long planetSelfMapHash = 1234567890L;
 
+        printKnownHierarchyCheck();
         printUniverseReport(universeMapHash);
         printGalaxyReport(galaxyMapHash);
         printStarSystemReport(starSystemMapHash);
@@ -42,7 +56,80 @@ public final class GenerationManualReport {
 
         System.out.printf("%nTerrain sample (%dx%d, letters: S=Sea P=Plain F=Forest M=Mountain)%n", sampleSize, sampleSize);
         printTerrainLetterGrid(map, sampleSize);
+        System.out.printf("%nANSI terrain+ore sample (%dx%d, ore overlays mountains)%n", sampleSize, sampleSize);
+        System.out.println("Plain=green, Forest=dark green, Mountain=light brown, Sea=aqua");
+        System.out.println("Ore overlay on mountains: Coal=black Iron=silver Gold=gold Bauxite=taupe");
+        printTerrainAnsiGrid(map, sampleSize);
         System.out.println();
+    }
+
+    private static void printTerrainAnsiGrid(PlanetGeneration.PlanetMap map, int sampleSize) {
+        if (map.width() < sampleSize || map.height() < sampleSize) {
+            throw new IllegalArgumentException("Planet size is smaller than requested sample size");
+        }
+        int xOffset = (map.width() - sampleSize) / 2;
+        int yOffset = (map.height() - sampleSize) / 2;
+        for (int y = 0; y < sampleSize; y++) {
+            StringBuilder row = new StringBuilder(sampleSize * 20);
+            for (int x = 0; x < sampleSize; x++) {
+                int mx = x + xOffset;
+                int my = y + yOffset;
+                var terrain = map.terrainTypes()[mx][my];
+                var ore = map.oreTypes()[mx][my];
+                row.append(renderAnsiCell(terrain, ore));
+            }
+            row.append(ANSI_RESET);
+            System.out.println(row);
+        }
+    }
+
+    private static String renderAnsiCell(PlanetGeneration.TerrainType terrain, PlanetGeneration.OreType ore) {
+        if (ore != null) {
+            return switch (ore) {
+                case Ore_Coal -> ANSI_BG_COAL + ANSI_FG_LIGHT + "C ";
+                case Ore_Iron -> ANSI_BG_IRON + ANSI_FG_DARK + "I ";
+                case Ore_Gold -> ANSI_BG_GOLD + ANSI_FG_DARK + "G ";
+                case Ore_Bauxite -> ANSI_BG_BAUXITE + ANSI_FG_LIGHT + "B ";
+            };
+        }
+        return switch (terrain) {
+            case TerrainType_Sea -> ANSI_BG_AQUA + ANSI_FG_DARK + "~ ";
+            case TerrainType_Plain -> ANSI_BG_GRASS + ANSI_FG_DARK + ". ";
+            case TerrainType_Forest -> ANSI_BG_FOREST + ANSI_FG_LIGHT + "T ";
+            case TerrainType_Mountain -> ANSI_BG_MOUNTAIN + ANSI_FG_DARK + "^ ";
+        };
+    }
+
+    private static void printKnownHierarchyCheck() {
+        String universeMapKey = "Weathering.MapOfUniverse";
+        String galaxyMapKey = "Weathering.MapOfGalaxy#=1,4";
+        String planetSystemMapKey = "Weathering.MapOfStarSystem#=1,4=14,93";
+        String planetMapKey = STARTING_PLANET_MAP_KEY;
+
+        long universeHash = Hashing.hashString(universeMapKey);
+        long galaxyHash = Hashing.hashString(galaxyMapKey);
+        long starSystemHash = Hashing.hashString(planetSystemMapKey);
+        long universeTileHash = Hashing.hash(1, 4, 100, 100, (int) universeHash);
+        long galaxyTileHash = Hashing.hash(14, 93, 100, 100, (int) galaxyHash);
+
+        var stars = CelestialGeneration.computeStarPositions(starSystemHash);
+        long planetTileHash = Hashing.hash(24, 31, 32, 32, (int) starSystemHash);
+        var body = CelestialGeneration.classifyBody(planetTileHash, starSystemHash, 24, 31, stars);
+        boolean isPlanetLike = body.name().startsWith("Planet") || body == CelestialGeneration.BodyType.GasGiant || body == CelestialGeneration.BodyType.GasGiantRinged;
+
+        System.out.println("=== Hierarchy Spot Check ===");
+        System.out.printf("Universe tile (1,4) in %s -> galaxy=%s (tileHash=%d)%n", universeMapKey,
+            CelestialGeneration.isGalaxyTile(universeTileHash), universeTileHash);
+        System.out.printf("Galaxy tile (14,93) in %s -> planetSystem=%s (tileHash=%d)%n", galaxyMapKey,
+            CelestialGeneration.isStarSystemTile(galaxyTileHash), galaxyTileHash);
+        System.out.printf("Body tile (24,31) in %s -> %s (planetLike=%s)%n", planetSystemMapKey, body, isPlanetLike);
+
+        long planetMapHash = Hashing.hashString(planetMapKey);
+        long planetSelfMapHash = Hashing.hashString(selfMapKeyIndex(planetMapKey));
+        var map = PlanetGeneration.generate(planetMapHash, planetSelfMapHash, 5);
+        boolean inBounds = 24 < map.width() && 31 < map.height();
+        System.out.printf("Planet tile (24,31) in %s -> inBounds=%s terrain=%s ore=%s%n%n",
+            planetMapKey, inBounds, inBounds ? map.terrainTypes()[24][31] : "n/a", inBounds ? map.oreTypes()[24][31] : "n/a");
     }
 
     private static void printTerrainLetterGrid(PlanetGeneration.PlanetMap map, int sampleSize) {

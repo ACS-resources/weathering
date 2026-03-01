@@ -9,6 +9,7 @@ public final class GenerationParityTest {
         testStarSystemClassification();
         testPlanetProfileAndTerrain();
         testStartingPlanetKeyGeneration();
+        testKnownHierarchyCoordinates();
         System.out.println("All generation parity checks passed.");
     }
 
@@ -74,6 +75,19 @@ public final class GenerationParityTest {
         }
         require(sea + plain + forest + mountain == map.width() * map.height(), "Terrain coverage mismatch");
         require(sea > 0 && plain > 0 && mountain > 0, "Terrain mix should include sea/plain/mountain");
+
+        int oresOnMountains = 0;
+        for (int i = 0; i < map.width(); i++) {
+            for (int j = 0; j < map.height(); j++) {
+                var ore = map.oreTypes()[i][j];
+                if (ore != null) {
+                    require(map.terrainTypes()[i][j] == PlanetGeneration.TerrainType.TerrainType_Mountain,
+                        "Ore must generate only on mountain terrain");
+                    oresOnMountains++;
+                }
+            }
+        }
+        require(oresOnMountains > 0, "Expected at least one ore tile on mountains");
     }
 
 
@@ -92,10 +106,34 @@ public final class GenerationParityTest {
             for (int y = 0; y < 64; y++) {
                 var terrain = map.terrainTypes()[x][y];
                 require(terrain != null, "Terrain value should never be null");
+                var ore = map.oreTypes()[x][y];
+                if (ore != null) {
+                    require(terrain == PlanetGeneration.TerrainType.TerrainType_Mountain,
+                        "Starting-planet ore must sit on mountain terrain");
+                }
                 terrainCount++;
             }
         }
         require(terrainCount == 4096, "64x64 starting-star terrain sample size mismatch");
+    }
+
+    private static void testKnownHierarchyCoordinates() {
+        long universeHash = Hashing.hashString("Weathering.MapOfUniverse");
+        long universeTileHash = Hashing.hash(1, 4, 100, 100, (int) universeHash);
+        require(universeTileHash != 0, "Universe tile hash at (1,4) should be deterministic and non-zero");
+
+        long galaxyHash = Hashing.hashString("Weathering.MapOfGalaxy#=1,4");
+        long galaxyTileHash = Hashing.hash(14, 93, 100, 100, (int) galaxyHash);
+        require(CelestialGeneration.isStarSystemTile(galaxyTileHash), "Expected star system at galaxy (14,93)");
+
+        long starSystemHash = Hashing.hashString("Weathering.MapOfStarSystem#=1,4=14,93");
+        var stars = CelestialGeneration.computeStarPositions(starSystemHash);
+        long planetTileHash = Hashing.hash(24, 31, 32, 32, (int) starSystemHash);
+        var body = CelestialGeneration.classifyBody(planetTileHash, starSystemHash, 24, 31, stars);
+        boolean isPlanetLike = body.name().startsWith("Planet")
+            || body == CelestialGeneration.BodyType.GasGiant
+            || body == CelestialGeneration.BodyType.GasGiantRinged;
+        require(isPlanetLike, "Expected planet-like body at star-system tile (24,31)");
     }
 
     private static void require(boolean condition, String message) {
