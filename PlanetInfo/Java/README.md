@@ -27,10 +27,23 @@ This directory contains a Unity-independent Java prototype for core generation l
 - `src/test/java/com/weathering/generation/GenerationParityTest.java`:
   executable parity tests for deterministic generation behavior.
 
-## Run checks
-```bash
+## Run checks (Win11 + JDK 21)
+
+### PowerShell
+```powershell
 cd PlanetInfo/Java
-mkdir -p out
-javac -d out $(find src/main/java src/test/java -name '*.java')
+if (!(Test-Path out)) { New-Item -ItemType Directory -Path out | Out-Null }
+$files = Get-ChildItem -Recurse src/main/java,src/test/java -Filter *.java | ForEach-Object { $_.FullName }
+javac -encoding UTF-8 -d out $files
 java -cp out com.weathering.generation.GenerationParityTest
+```
+
+### CMD
+```cmd
+cd PlanetInfo\Java
+if not exist out mkdir out
+for /r src %f in (*.java) do @echo %f>> sources.txt
+javac -encoding UTF-8 -d out @sources.txt
+java -cp out com.weathering.generation.GenerationParityTest
+del sources.txt
 ```
