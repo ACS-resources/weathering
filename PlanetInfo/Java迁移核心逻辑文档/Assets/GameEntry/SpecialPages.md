@@ -1,0 +1,201 @@
+# SpecialPages.cs（Java 迁移解构文档）
+
+- 源文件：`Assets/GameEntry/SpecialPages.cs`
+- 命名空间：`Weathering`
+- 代码行数：`157`
+
+## 1. 文件定位与迁移价值
+
+该文件属于 Weathering 核心逻辑范围。迁移到 Java 时，应优先保持其**状态模型、行为约束、输入输出契约、序列化语义**一致。
+
+## 2. 类型清单（逐项映射）
+
+- `class SpecialPages`：建议在 Java 中映射为同名（或语义等价）类型，并保留可见性与职责边界。
+
+## 3. 函数/属性接口梳理
+
+### 3.1 方法签名
+
+- `public OpenStartingPage()`
+- `private AskFont()`
+- `private AskBGM()`
+- `public IntroPage()`
+- `private ClosingPage()`
+- `public HowToUseHammerButton()`
+- `public HowToUseMagnetButton()`
+
+### 3.2 属性签名
+
+- `public SpecialPages`
+
+## 4. 实现机制详解（按源码解读）
+
+> 本节直接嵌入源码，便于逐行建立 Java 对照实现与 prototype test。
+
+```csharp
+
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace Weathering
+{
+	public static class SpecialPages
+	{
+		public static void OpenStartingPage() {
+            UI.DontCloseOnIntroduction = true;
+            (UI.Ins as UI).SetExitIndicatorVisible(false);
+            IntroPage();
+        }
+		private static void AskFont() {
+			GameMenu.Ins.SynchronizeFont();
+
+			var items = new List<IUIItem>();
+
+			items.Add(UIItem.CreateText($"可选字体: 1 像素字体 2 平滑字体"));
+
+			items.Add(UIItem.CreateButton("切换下一种字体", () => {
+				GameMenu.Ins.ChangeFont();
+				GameMenu.Ins.SynchronizeFont();
+				AskFont();
+			}));
+
+			items.Add(UIItem.CreateButton("使用当前字体", () => {
+				GameMenu.Ins.SynchronizeFont();
+				AskBGM();
+			}));
+
+			UI.Ins.ShowItems("是否切换字体", items);
+		}
+		private static void AskBGM() {
+			var items = new List<IUIItem>();
+
+			int musicCount = Sound.Ins.MusicCount;
+
+			items.Add(UIItem.CreateText($"共有背景音乐 {musicCount} 首"));
+
+			if (musicCount < 5) items.Add(UIItem.CreateMultilineText("检测到音乐数量过少, 可能当前游戏版本是压缩版"));
+
+			items.Add(UIItem.CreateButton("播放音乐", () => {
+				Sound.Ins.MusicEnabled = true;
+				IntroPage();
+			}));
+
+			items.Add(UIItem.CreateButton("不播放音乐", () => {
+				Sound.Ins.MusicEnabled = false;
+				IntroPage();
+			}));
+
+			UI.Ins.ShowItems("是否播放背景音乐", items);
+		}
+		public static void IntroPage() {
+
+			// string color = "<color=#ff6666ff>";
+
+			var items = new List<IUIItem>();
+
+			items.Add(UIItem.CreateText("欢迎来到《挂机工厂》! "));
+
+			// items.Add(UIItem.CreateMultilineText("玩家在游戏中, 会模拟经营、角色扮演、建造沙盒、解锁科技、探索地图。"));
+
+			items.Add(UIItem.CreateMultilineText("在这个版本里, 可以在殖民各种星球, 建立太空帝国"));
+
+			items.Add(UIItem.CreateMultilineText("注意，因为某种神秘力量的影响，整个宇宙会从2021年6月1日开始，到2022年6月1日，逐渐变为废土，也许科技进步能够拯救这个过程"));
+
+			items.Add(UIItem.CreateSeparator());
+
+			items.Add(UIItem.CreateMultilineText("游戏支持离线挂机, 即使关闭了游戏, 游戏中的所有工厂仍然在运转。"));
+
+			items.Add(UIItem.CreateSeparator());
+
+			items.Add(UIItem.CreateMultilineText("直接关闭游戏会让一定时间内的所有操作无效, 点击右上角设置，可以保存并退出。在设置菜单中也可以进行字体、音量等更多设置。"));
+
+			// items.Add(UIItem.CreateMultilineText("如果缺少资源, 那么可以尝试扩大生产规模, 或者建立更多仓库自动收集资源"));
+
+			//items.Add(UIItem.CreateSeparator());
+
+			//items.Add(UIItem.CreateMultilineText("七大教程"));
+
+			//items.Add(UIItem.CreateMultilineText($"1 {color}拖拽</color>屏幕, 移动飞船, 或移动人物"));
+
+			//items.Add(UIItem.CreateMultilineText($"2 {color}点击</color>屏幕, 与平原、森林、山地、海洋互动"));
+
+			//items.Add(UIItem.CreateMultilineText($"3 点击屏幕右上角的 “{color}文件夹</color>” 查看{color}物资</color>(即查看背包)"));
+
+			//items.Add(UIItem.CreateMultilineText($"4 点击屏幕右上角的 “{color}?</color>” 查看主线{color}任务</color>"));
+
+			//items.Add(UIItem.CreateMultilineText($"5 点击屏幕右上角的 “{color}齿轮</color>” 可以进行游戏{color}设置</color>, 也可以再次打开此教程"));
+
+			//items.Add(UIItem.CreateMultilineText($"6 学习使用屏幕右方的 “{color}锤子</color>” 工具按钮, 可以简化建筑的 {color}建造</color>、{color}拆除</color>、{color}复制</color>"));
+
+			//items.Add(UIItem.CreateMultilineText($"7 学习使用屏幕右方的 “{color}磁铁</color>” 工具按钮, 可以简化建筑的 {color}输入</color>和{color}输出</color>"));
+
+			items.Add(UIItem.CreateSeparator());
+
+			items.Add(UIItem.CreateButton("已阅, 关闭教程", ClosingPage));
+
+			UI.Ins.ShowItems("教程", items);
+		}
+
+		private static void ClosingPage() {
+
+			(UI.Ins as UI).SetExitIndicatorVisible(true);
+
+			var items = new List<IUIItem>();
+
+			//items.Add(UIItem.CreateSeparator());
+
+			//items.Add(UIItem.CreateMultilineText("如果某项操作没反应, 有可能是右上角的“文件夹” (即地图资源背包) 满了"));
+
+			items.Add(UIItem.CreateMultilineText($"点击平原, 建造一个{Localization.Ins.Get<TotemOfNature>()}, 开始游戏"));
+
+			items.Add(UIItem.CreateText("点击屏幕上方半透明黑色区域, 关闭此界面"));
+
+			UI.DontCloseOnIntroduction = false;
+
+			UI.Ins.ShowItems("开始游戏", items);
+		}
+
+		public static void HowToUseHammerButton() {
+			var items = new List<IUIItem>();
+
+			items.Add(UIItem.CreateMultilineText("教程还没做"));
+
+			items.Add(UIItem.CreateSeparator());
+
+			items.Add(UIItem.CreateMultilineText("大概用法是：点击空地, 粘贴一个(刚刚造过的)同类建筑。点击建筑, 可以拆除建筑(如果可以拆除), 并且复制此建筑。"));
+			items.Add(UIItem.CreateReturnButton(GameMenu.Ins.OnTapSettings));
+
+
+			UI.Ins.ShowItems("游戏即将开始", items);
+		}
+
+		public static void HowToUseMagnetButton() {
+			var items = new List<IUIItem>();
+
+			items.Add(UIItem.CreateMultilineText("教程还没做"));
+
+			items.Add(UIItem.CreateSeparator());
+
+			items.Add(UIItem.CreateMultilineText("大概用法是：点击建筑(包括道路), 把周围4格的东西都吸过来(如果能吸过来)。如果建筑已经吸引了东西, 那么会把吸的东西还回去。"));
+
+			items.Add(UIItem.CreateSeparator());
+
+			items.Add(UIItem.CreateMultilineText("所以, 沿着道路, 可以把东西吸很远的距离。"));
+
+			items.Add(UIItem.CreateReturnButton(GameMenu.Ins.OnTapSettings));
+
+			UI.Ins.ShowItems("游戏即将开始", items);
+		}
+	}
+}
+
+```
+
+## 5. Java 迁移建议（本文件）
+
+1. 先保留领域模型（类/接口）结构，再替换底层平台调用。
+2. 若含 Unity API（如 `MonoBehaviour`、`Vector2Int`、`Tile`），先在 Java 中定义适配层接口与数据类。
+3. 对外部可序列化字段保持字段语义与默认值一致，避免存档语义漂移。
+4. 对反射型逻辑优先替换为“注册表 + 稳定 content_id”机制。
+5. 将该文件纳入跨语言黄金样例测试，确保行为可回归。

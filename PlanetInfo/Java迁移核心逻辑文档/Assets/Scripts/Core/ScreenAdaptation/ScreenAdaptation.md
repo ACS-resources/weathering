@@ -1,0 +1,198 @@
+# ScreenAdaptation.cs（Java 迁移解构文档）
+
+- 源文件：`Assets/Scripts/Core/ScreenAdaptation/ScreenAdaptation.cs`
+- 命名空间：`Weathering`
+- 代码行数：`151`
+
+## 1. 文件定位与迁移价值
+
+该文件属于 Weathering 核心逻辑范围。迁移到 Java 时，应优先保持其**状态模型、行为约束、输入输出契约、序列化语义**一致。
+
+## 2. 类型清单（逐项映射）
+
+- `class ScreenAdaptation`：建议在 Java 中映射为同名（或语义等价）类型，并保留可见性与职责边界。
+
+## 3. 函数/属性接口梳理
+
+### 3.1 方法签名
+
+- `private Awake()`
+- `private Start()`
+- `private RecalcSize()`
+- `private CalcRecommendedSize(out int scale)`
+- `private SyncUICameraOrthographicSizeWithScreenSize()`
+- `private Update()`
+
+### 3.2 属性签名
+
+- `public Ins`
+- `public Scale`
+- `public Size`
+- `public DoubleSizeMultiplier`
+- `public SizeScale`
+
+## 4. 实现机制详解（按源码解读）
+
+> 本节直接嵌入源码，便于逐行建立 Java 对照实现与 prototype test。
+
+```csharp
+
+using System;
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace Weathering
+{
+    public class ScreenAdaptation : MonoBehaviour
+    {
+        [SerializeField]
+        private Material MainMat;
+
+        public static ScreenAdaptation Ins { get; private set; }
+        private void Awake() {
+            if (Ins != null) throw new Exception();
+            Ins = this;
+        }
+
+        public int Scale { get; private set; }
+        public Vector2 Size { get; private set; }
+        private void Start() {
+            RecalcSize();
+        }
+
+        private void RecalcSize() {
+            Vector2Int size = CalcRecommendedSize(out int scale);
+            Scale = scale;
+            Size = size;
+
+            SyncUICameraOrthographicSizeWithScreenSize();
+
+            MapView mapView = MapView.Ins as MapView;
+
+
+            var rt = new RenderTexture(size.x, size.y, -1);
+            rt.name = $"{size.x}x{size.y}";
+            rt.filterMode = FilterMode.Point;
+
+
+            (UI.Ins as UI).Raw = rt;
+            mapView.TargetTexture = rt;
+
+
+            Vector2 camScale = new Vector2(20 * ((float)size.x / UI.DefaultWidth), 11.25f * ((float)size.y / UI.DefaultHeight));
+            // mapView.OnlyThingScale = scale;
+            mapView.CameraSize = camScale.y / 2;
+
+            MainMat.SetTexture("_MainTex", rt);
+        }
+
+        private Vector2Int CalcRecommendedSize(out int scale) {
+            int width = Screen.width;
+            int height = Screen.height;
+            scale = 1;
+            if (width % 320 == 0 && height % 180 == 0) { // 16:9
+                scale = width / 320;
+                width = 320;
+                height = 180;
+            } else if (width % 320 == 0 && height % 200 == 0) { // 16:10
+                scale = width / 320;
+                width = 320;
+                height = 200;
+            } else if (width % 360 == 0 && height % 180 == 0) { // 2:1
+                scale = width / 360;
+                width = 360;
+                height = 180;
+            } else {
+                while (width / 2 >= UI.DefaultWidth && height / 2 >= UI.DefaultHeight) {
+                    if (width / 2 >= UI.DefaultWidth && height / 2 >= UI.DefaultHeight && width % 2 == 0 && height % 2 == 0) {
+                        width /= 2;
+                        height /= 2;
+                        scale *= 2;
+                    } else if (width / 3 >= UI.DefaultWidth && height / 3 >= UI.DefaultHeight && width % 3 == 0 && height % 3 == 0) {
+                        width /= 3;
+                        height /= 3;
+                        scale *= 3;
+                    } else if (width / 5 >= UI.DefaultWidth && height / 5 >= UI.DefaultHeight && width % 5 == 0 && height % 5 == 0) {
+                        width /= 5;
+                        height /= 5;
+                        scale *= 5;
+                    } else if (width / 7 >= UI.DefaultWidth && height / 7 >= UI.DefaultHeight && width % 7 == 0 && height % 7 == 0) {
+                        width /= 7;
+                        height /= 7;
+                        scale *= 7;
+                    } else {
+                        width /= 2;
+                        height /= 2;
+                        scale *= 2;
+                    }
+                }
+            }
+
+            return new Vector2Int(width, height);
+        }
+
+        //public class DoubleSizeOption { }
+
+        //private bool doubleSize = false;
+        //public bool DoubleSize { get { return doubleSize; } set { doubleSize = value; SyncUICameraOrthographicSizeWithScreenSize(); } }
+        //public int DoubleSizeMultiplier { get => DoubleSize ? 2 : 1; }
+        //public const float RefOrthographcSize = 5.625f;
+        public int DoubleSizeMultiplier { get => 1; }
+
+        public int SizeScale { get; private set; } = 1;
+        private void SyncUICameraOrthographicSizeWithScreenSize() {
+            //screenWidthLastTime = Screen.width;
+            //screenHeightLastTime = Screen.height;
+
+            // SizeScale = DoubleSize ? 2 : 1;
+
+            int screenScale = Math.Min(Screen.width / UI.DefaultWidth, Screen.height / UI.DefaultHeight);
+            if (screenScale < 1) screenScale = 1; // tiny screen
+
+            MapView mapView = MapView.Ins as MapView;
+
+            mapView.CameraHeightHalf = Math.Min(12, 3 + (9 * (int)Size.x / UI.DefaultHeight));
+            mapView.CameraWidthHalf = Math.Min(21, 3 + (15 * (int)Size.y / UI.DefaultWidth));
+
+            var ui = (UI.Ins as UI).GetComponent<UnityEngine.UI.CanvasScaler>();
+            ui.scaleFactor = screenScale;
+        }
+
+        private int screenWidthLastTime;
+        private int screenHeightLastTime;
+
+        //private const string mouseScrollWheel = "Mouse ScrollWheel";
+        //private float scale = 1f;
+
+#if UNITY_EDITOR
+        private void Update() {
+            if (Screen.width != screenWidthLastTime || Screen.height != screenHeightLastTime) {
+                RecalcSize();
+                screenWidthLastTime = Screen.width;
+                screenHeightLastTime = Screen.height;
+            }
+            //if (GameMenu.IsInStandalone) {
+            //    if (!UI.Ins.Active) {
+            //        // PC上会根据鼠标滚轮进行一定缩放
+            //        float dv = Input.GetAxisRaw(mouseScrollWheel);
+            //        if (dv != 0) {
+            //            scale -= dv * Time.deltaTime * 100;
+            //            scale = Mathf.Clamp(scale, 0.5f, 1);
+            //            SyncUICameraOrthographicSizeWithScreenSize();
+            //        }
+            //    }
+            //}
+        }
+#endif
+    }
+}
+
+```
+
+## 5. Java 迁移建议（本文件）
+
+1. 先保留领域模型（类/接口）结构，再替换底层平台调用。
+2. 若含 Unity API（如 `MonoBehaviour`、`Vector2Int`、`Tile`），先在 Java 中定义适配层接口与数据类。
+3. 对外部可序列化字段保持字段语义与默认值一致，避免存档语义漂移。
+4. 对反射型逻辑优先替换为“注册表 + 稳定 content_id”机制。
+5. 将该文件纳入跨语言黄金样例测试，确保行为可回归。
