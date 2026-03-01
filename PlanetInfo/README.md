@@ -38,4 +38,8 @@ ranked = sort_planets(all_planets, by="mineral_density", reverse=True)
 
 ## 扩展开发手册（草案）
 
-- 见 `PlanetInfo/AddonModDevelopmentManual.md`。该文档基于当前 Unity 项目结构调研，提出面向 addon/mod 的标准化方案与迁移路径。
+- 见 `PlanetInfo/AddonModDevelopmentManual.md`（中文版）。该文档基于当前 Unity 项目结构调研，提出面向 addon/mod 的标准化方案与迁移路径。
+
+## 跨语言迁移评估
+
+- 见 `PlanetInfo/跨语言迁移评估手册.md`。该文档评估了在忽略 Shader 等不影响核心流程的 QoL 表现后，迁移到 Python/Java 的可行性与实施路线。
