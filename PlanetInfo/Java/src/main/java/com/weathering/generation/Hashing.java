@@ -13,6 +13,15 @@ public final class Hashing {
         return v & 0xFFFFFFFFL;
     }
 
+    public static long hashString(String value) {
+        long result = 7L;
+        for (int i = 0; i < value.length(); i++) {
+            result = (result + value.charAt(i)) & 0xFFFFFFFFL;
+            result = hash32(result);
+        }
+        return result & 0xFFFFFFFFL;
+    }
+
     public static long hash(int i, int j, int width, int height, int offset) {
         long seed = ((long) offset * width + height + i + (long) j * width) & 0xFFFFFFFFL;
         return hash32(seed);

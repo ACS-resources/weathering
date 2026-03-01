@@ -47,3 +47,25 @@ javac -encoding UTF-8 -d out @sources.txt
 java -cp out com.weathering.generation.GenerationParityTest
 del sources.txt
 ```
+
+
+## Manual-check output
+
+After compiling, run:
+
+```powershell
+java -cp out com.weathering.generation.GenerationManualReport
+```
+
+This prints human-checkable reports for:
+- universe galaxy-tile distribution,
+- galaxy star-system-tile distribution,
+- star-system star positions + celestial body histogram,
+- planet profile + attribute ranges + terrain histogram + sample cells,
+- starting-star planet key `Weathering.MapOfPlanet#=1,4=14,93=24,31` with a 64x64 terrain letter map.
+
+Terrain letters:
+- `S` = Sea
+- `P` = Plain
+- `F` = Forest
+- `M` = Mountain
