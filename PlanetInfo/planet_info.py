@@ -605,9 +605,15 @@ class UniverseService:
             avg_mineral_density = sum(p.mineral_density for p in planets) / len(planets)
             planet_count = len(planets)
             avg_area = overall_area / planet_count
-            base_value = sum((p.planet_size**2) ** 0.5 / p.mineral_density for p in planets)
-            creep_penalty = planet_count / math.log2((avg_area / threshold_t) + 2)
-            score_v = base_value * creep_penalty
+
+            single_planet_score_sum = 0.0
+            for p in planets:
+                planet_area = p.planet_size**2
+                abundance = max(p.mineral_density, 1.000000001)
+                single_planet_score_sum += planet_area / ((abundance - 1) ** 2.5)
+
+            system_weight = math.sqrt(planet_count) / math.log2((avg_area / threshold_t) + 2)
+            score_v = single_planet_score_sum * system_weight * 0.1
             rows.append(
                 {
                     "gx": s["gx"],
@@ -619,8 +625,8 @@ class UniverseService:
                     "overall_area": overall_area,
                     "avg_area": round(avg_area, 2),
                     "avg_mineral_density": round(avg_mineral_density, 2),
-                    "base_value": round(base_value, 4),
-                    "cost_penalty": round(creep_penalty, 4),
+                    "single_planet_score_sum": round(single_planet_score_sum, 4),
+                    "system_weight": round(system_weight, 4),
                     "score_v": round(score_v, 4),
                     "planet_type_stats": dict(s["planet_type_counter"]),
                 }
