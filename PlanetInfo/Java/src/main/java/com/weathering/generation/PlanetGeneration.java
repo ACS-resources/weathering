@@ -90,31 +90,34 @@ public final class PlanetGeneration {
                 temperatures[i][j] = temperature;
                 temperatureTypes[i][j] = getTemperatureType(temperature);
                 terrainTypes[i][j] = deriveTerrain(altitudeTypes[i][j], moistureTypes[i][j], temperatureTypes[i][j]);
-                oreTypes[i][j] = generateOreType(mapHashCode, selfMapHashCode, p.mineralDensity(), i, j, terrainTypes[i][j]);
+                oreTypes[i][j] = generateOreType(mapHashCode, p.mineralDensity(), i, j, terrainTypes[i][j], width, height);
             }
         }
 
         return new PlanetMap(width, height, altitudes, altitudeTypes, moistures, moistureTypes, temperatures, temperatureTypes, terrainTypes, oreTypes);
     }
 
-    static OreType generateOreType(long mapHashCode, long selfMapHashCode, int mineralDensity, int x, int y, TerrainType terrain) {
+    static OreType generateOreType(long mapHashCode, int mineralDensity, int x, int y, TerrainType terrain, int width, int height) {
         if (terrain != TerrainType.TerrainType_Mountain) {
             return null;
         }
-        long oreNoise = Hashing.hash(x, y, 257, 509, (int) Hashing.addSalt(selfMapHashCode ^ mapHashCode, 0x4F52454CL));
-        long oreRoll = Math.floorMod(oreNoise, 100);
-        int spawnChance = Math.min(70, Math.max(15, mineralDensity * 2));
-        if (oreRoll >= spawnChance) {
+        if (mineralDensity <= 0) {
             return null;
         }
-        int oreKind = (int) Math.floorMod(Hashing.hash32(oreNoise), 4);
-        return switch (oreKind) {
-            case 0 -> OreType.Ore_Coal;
-            case 1 -> OreType.Ore_Iron;
-            case 2 -> OreType.Ore_Gold;
-            case 3 -> OreType.Ore_Bauxite;
-            default -> throw new IllegalStateException();
-        };
+        Hashing.UIntRef hashRef = new Hashing.UIntRef(Hashing.hash(x, y, width, height, (int) mapHashCode));
+        if (Hashing.hashed(hashRef) % mineralDensity != 0) {
+            return null;
+        }
+        if (Hashing.hashed(hashRef) % 10 == 0) {
+            return OreType.Ore_Gold;
+        }
+        if (Hashing.hashed(hashRef) % 2 == 0) {
+            return OreType.Ore_Coal;
+        }
+        if (Hashing.hashed(hashRef) % 3 != 0) {
+            return OreType.Ore_Iron;
+        }
+        return OreType.Ore_Bauxite;
     }
 
     static AltitudeType getAltitudeType(int altitude) {

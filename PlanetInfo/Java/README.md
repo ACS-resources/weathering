@@ -63,8 +63,9 @@ This prints human-checkable reports for:
 - galaxy star-system-tile distribution (with sample actual star-system coordinates),
 - star-system star positions + celestial body histogram + non-empty body samples (skip `SpaceEmptiness`),
 - planet profile + attribute ranges + terrain histogram + sample cells,
-- starting-star planet key `Weathering.MapOfPlanet#=1,4=14,93=24,31` with a flipped (left-right + upside-down) landing-centered terrain view around `(24,31)`,
-- ANSI-colored terrain+ore flipped landing-centered grid for visual verification,
+- starting-star planet key `Weathering.MapOfPlanet#=1,4=14,93=24,31` with an upside-down landing-centered terrain view around the original landing position `(4,83)`,
+- ANSI-colored terrain+ore upside-down landing-centered grid for visual verification,
+- chessboard-style coordinate indices on top (letters) and left (world y values) for manual tile lookup,
 - star-system body totals for the known chain (`(1,4)->(14,93)`) including expected `planetLikeBodies=16` and `StarOrange`.
 
 Terrain letters:

@@ -25,8 +25,8 @@ public final class GenerationManualReport {
     private static final String GALAXY_MAP_KEY = "Weathering.MapOfGalaxy#=1,4";
     private static final String STAR_SYSTEM_MAP_KEY = "Weathering.MapOfStarSystem#=1,4=14,93";
     private static final String STAR_SYSTEM_SELF_INDEX = "#=1,4=14,93";
-    private static final int LANDING_X = 24;
-    private static final int LANDING_Y = 31;
+    private static final int LANDING_X = 4;
+    private static final int LANDING_Y = 83;
 
     private GenerationManualReport() {}
 
@@ -62,12 +62,12 @@ public final class GenerationManualReport {
         System.out.printf("Profile: size=%d mineralDensity=%d baseAltitudeNoiseSize=%d baseMoistureNoiseSize=%d%n",
             profile.size(), profile.mineralDensity(), profile.baseAltitudeNoiseSize(), profile.baseMoistureNoiseSize());
 
-        System.out.printf("%nTerrain flipped view around landing (%d,%d) (%dx%d)%n", LANDING_X, LANDING_Y, map.width(), map.height());
-        printTerrainLetterGridFlippedAround(map, LANDING_X, LANDING_Y);
-        System.out.printf("%nANSI terrain+ore flipped view around landing (%d,%d) (%dx%d)%n", LANDING_X, LANDING_Y, map.width(), map.height());
+        System.out.printf("%nTerrain upside-down view around landing (%d,%d) (%dx%d)%n", LANDING_X, LANDING_Y, map.width(), map.height());
+        printTerrainLetterGridUpsideDownAround(map, LANDING_X, LANDING_Y);
+        System.out.printf("%nANSI terrain+ore upside-down view around landing (%d,%d) (%dx%d)%n", LANDING_X, LANDING_Y, map.width(), map.height());
         System.out.println("Plain=green, Forest=dark green, Mountain=light brown, Sea=aqua");
         System.out.println("Ore overlay on mountains: Coal=black Iron=silver Gold=gold Bauxite=taupe");
-        printTerrainAnsiGridFlippedAround(map, LANDING_X, LANDING_Y);
+        printTerrainAnsiGridUpsideDownAround(map, LANDING_X, LANDING_Y);
         System.out.println();
     }
 
@@ -84,14 +84,16 @@ public final class GenerationManualReport {
         }
     }
 
-    private static void printTerrainAnsiGridFlippedAround(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
+    private static void printTerrainAnsiGridUpsideDownAround(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
         int xOrigin = centerX - map.width() / 2;
         int yOrigin = centerY - map.height() / 2;
+        printTopAxis(xOrigin, map.width());
         for (int y = 0; y < map.height(); y++) {
-            StringBuilder row = new StringBuilder(map.width() * 20);
+            int worldY = floorMod(yOrigin + (map.height() - 1 - y), map.height());
+            StringBuilder row = new StringBuilder(map.width() * 20 + 8);
+            row.append(String.format("%3d ", worldY));
             for (int x = 0; x < map.width(); x++) {
-                int worldX = floorMod(xOrigin + (map.width() - 1 - x), map.width());
-                int worldY = floorMod(yOrigin + (map.height() - 1 - y), map.height());
+                int worldX = floorMod(xOrigin + x, map.width());
                 var terrain = map.terrainTypes()[worldX][worldY];
                 var ore = map.oreTypes()[worldX][worldY];
                 row.append(renderAnsiCell(terrain, ore));
@@ -178,19 +180,42 @@ public final class GenerationManualReport {
         }
     }
 
-    private static void printTerrainLetterGridFlippedAround(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
+    private static void printTerrainLetterGridUpsideDownAround(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
         int xOrigin = centerX - map.width() / 2;
         int yOrigin = centerY - map.height() / 2;
+        printTopAxis(xOrigin, map.width());
         for (int y = 0; y < map.height(); y++) {
-            StringBuilder row = new StringBuilder(map.width());
+            int worldY = floorMod(yOrigin + (map.height() - 1 - y), map.height());
+            StringBuilder row = new StringBuilder(map.width() + 8);
+            row.append(String.format("%3d ", worldY));
             for (int x = 0; x < map.width(); x++) {
-                int worldX = floorMod(xOrigin + (map.width() - 1 - x), map.width());
-                int worldY = floorMod(yOrigin + (map.height() - 1 - y), map.height());
+                int worldX = floorMod(xOrigin + x, map.width());
                 var terrain = map.terrainTypes()[worldX][worldY];
                 row.append(terrainToLetter(terrain));
             }
             System.out.println(row);
         }
+    }
+
+
+    private static void printTopAxis(int xOrigin, int width) {
+        StringBuilder header = new StringBuilder(width + 8);
+        header.append("    ");
+        for (int x = 0; x < width; x++) {
+            int worldX = floorMod(xOrigin + x, width);
+            header.append(columnLabel(worldX).charAt(0));
+        }
+        System.out.println(header);
+    }
+
+    private static String columnLabel(int index) {
+        int n = index;
+        StringBuilder sb = new StringBuilder();
+        do {
+            sb.insert(0, (char) ('A' + (n % 26)));
+            n = n / 26 - 1;
+        } while (n >= 0);
+        return sb.toString();
     }
 
     private static int floorMod(int value, int modulus) {
