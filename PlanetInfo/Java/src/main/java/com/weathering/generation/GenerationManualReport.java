@@ -224,14 +224,8 @@ public final class GenerationManualReport {
 
         System.out.println("=== Universe Report ===");
         System.out.printf("MapHash=%d size=%dx%d%n", mapHash, width, height);
-        System.out.println("Sample tiles (x,y -> tileHash -> isGalaxy):");
-
-        int[][] samples = new int[][] { {0, 0}, {1, 4}, {14, 93}, {24, 31}, {99, 99} };
-        for (int[] sample : samples) {
-            long tileHash = Hashing.hash(sample[0], sample[1], width, height, (int) mapHash);
-            boolean isGalaxy = CelestialGeneration.isGalaxyTile(tileHash);
-            System.out.printf("  (%d,%d) -> %d -> %s%n", sample[0], sample[1], tileHash, isGalaxy);
-        }
+        System.out.println("Sample galaxy tiles (x,y -> tileHash):");
+        printUniverseGalaxySamples(mapHash, width, height, 5);
 
         for (int i = 0; i < width; i++) {
             for (int j = 0; j < height; j++) {
@@ -249,14 +243,8 @@ public final class GenerationManualReport {
 
         System.out.println("=== Galaxy Report ===");
         System.out.printf("MapHash=%d size=%dx%d%n", mapHash, width, height);
-        System.out.println("Sample tiles (x,y -> tileHash -> isStarSystem):");
-
-        int[][] samples = new int[][] { {0, 0}, {2, 17}, {14, 93}, {24, 31}, {99, 99} };
-        for (int[] sample : samples) {
-            long tileHash = Hashing.hash(sample[0], sample[1], width, height, (int) mapHash);
-            boolean isStarSystem = CelestialGeneration.isStarSystemTile(tileHash);
-            System.out.printf("  (%d,%d) -> %d -> %s%n", sample[0], sample[1], tileHash, isStarSystem);
-        }
+        System.out.println("Sample star-system tiles (x,y -> tileHash):");
+        printGalaxySystemSamples(mapHash, width, height, 5);
 
         for (int i = 0; i < width; i++) {
             for (int j = 0; j < height; j++) {
@@ -272,7 +260,7 @@ public final class GenerationManualReport {
         final int height = 32;
 
         var stars = CelestialGeneration.computeStarPositions(mapHash);
-        var starType = CelestialGeneration.calculateStarType(mapHash);
+        var starType = CelestialGeneration.calculateStarType(starTypeHash);
 
         System.out.println("=== Star System Report ===");
         System.out.printf("MapHash=%d size=%dx%d%n", mapHash, width, height);
@@ -293,17 +281,50 @@ public final class GenerationManualReport {
             System.out.printf("  %-24s %d%n", e.getKey(), e.getValue());
         }
 
-        int[][] samples = new int[][] {
-            {stars.x(), stars.y()},
-            {0, 0}, {3, 7}, {10, 14}, {31, 31}
-        };
-        System.out.println("Sample body classification (x,y -> body):");
-        for (int[] sample : samples) {
-            long tileHash = Hashing.hash(sample[0], sample[1], width, height, (int) mapHash);
-            var body = CelestialGeneration.classifyBody(tileHash, mapHash, sample[0], sample[1], stars);
-            System.out.printf("  (%d,%d) -> %s%n", sample[0], sample[1], body);
-        }
+        System.out.println("Sample non-empty body classification (x,y -> body):");
+        printStarSystemNonEmptySamples(mapHash, starTypeHash, stars, width, height, 6);
         System.out.println();
+    }
+
+
+    private static void printUniverseGalaxySamples(long mapHash, int width, int height, int limit) {
+        int printed = 0;
+        for (int y = 0; y < height && printed < limit; y++) {
+            for (int x = 0; x < width && printed < limit; x++) {
+                long tileHash = Hashing.hash(x, y, width, height, (int) mapHash);
+                if (CelestialGeneration.isGalaxyTile(tileHash)) {
+                    System.out.printf("  (%d,%d) -> %d%n", x, y, tileHash);
+                    printed++;
+                }
+            }
+        }
+    }
+
+    private static void printGalaxySystemSamples(long mapHash, int width, int height, int limit) {
+        int printed = 0;
+        for (int y = 0; y < height && printed < limit; y++) {
+            for (int x = 0; x < width && printed < limit; x++) {
+                long tileHash = Hashing.hash(x, y, width, height, (int) mapHash);
+                if (CelestialGeneration.isStarSystemTile(tileHash)) {
+                    System.out.printf("  (%d,%d) -> %d%n", x, y, tileHash);
+                    printed++;
+                }
+            }
+        }
+    }
+
+    private static void printStarSystemNonEmptySamples(long mapHash, long starTypeHash, CelestialGeneration.StarPositions stars, int width, int height, int limit) {
+        int printed = 0;
+        for (int y = 0; y < height && printed < limit; y++) {
+            for (int x = 0; x < width && printed < limit; x++) {
+                long tileHash = Hashing.hash(x, y, width, height, (int) mapHash);
+                var body = CelestialGeneration.classifyBody(tileHash, starTypeHash, x, y, stars);
+                if (body != CelestialGeneration.BodyType.SpaceEmptiness) {
+                    System.out.printf("  (%d,%d) -> %s%n", x, y, body);
+                    printed++;
+                }
+            }
+        }
     }
 
     private static void printPlanetReport(long mapHash, long selfMapHash) {

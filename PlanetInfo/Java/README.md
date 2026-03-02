@@ -59,9 +59,9 @@ java -cp out com.weathering.generation.GenerationManualReport
 
 This prints human-checkable reports for:
 - hierarchy spot-check for `universe(1,4) -> galaxy(14,93) -> star-system body(24,31)`,
-- universe galaxy-tile distribution,
-- galaxy star-system-tile distribution,
-- star-system star positions + celestial body histogram,
+- universe galaxy-tile distribution (with sample actual galaxy coordinates),
+- galaxy star-system-tile distribution (with sample actual star-system coordinates),
+- star-system star positions + celestial body histogram + non-empty body samples (skip `SpaceEmptiness`),
 - planet profile + attribute ranges + terrain histogram + sample cells,
 - starting-star planet key `Weathering.MapOfPlanet#=1,4=14,93=24,31` with full-map terrain output and cycled rendering centered at `(0,0)`,
 - ANSI-colored terrain+ore full-map grid and matching cycled grid for visual verification,
