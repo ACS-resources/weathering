@@ -19,7 +19,9 @@ import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 public final class PlanetMapViewer {
@@ -59,11 +61,11 @@ public final class PlanetMapViewer {
 
         PlanetMapPanel(PlanetGeneration.PlanetMap map) {
             this.map = map;
-            this.grassSheet = loadImage("PlanetInfo/Java/assets/tiles/Planets/Continental/PlanetContinental_Grass.png");
-            this.hillSheet = loadImage("PlanetInfo/Java/assets/tiles/Planets/Continental/PlanetContinental_Hill.png");
-            this.waterSurface = loadImage("PlanetInfo/Java/assets/tiles/Planets/Continental/PlanetContinental_WaterSurface.png");
-            this.waterWave = loadImage("PlanetInfo/Java/assets/tiles/Planets/Continental/PlanetContinental_WaterWave.png");
-            this.tree = loadImage("PlanetInfo/Java/assets/tiles/Planets/Continental/PlanetContinental_Tree.png");
+            this.grassSheet = loadImage("tiles/Planets/Continental/PlanetContinental_Grass.png");
+            this.hillSheet = loadImage("tiles/Planets/Continental/PlanetContinental_Hill.png");
+            this.waterSurface = loadImage("tiles/Planets/Continental/PlanetContinental_WaterSurface.png");
+            this.waterWave = loadImage("tiles/Planets/Continental/PlanetContinental_WaterWave.png");
+            this.tree = loadImage("tiles/Planets/Continental/PlanetContinental_Tree.png");
 
             this.cameraX = map.width() / 2.0;
             this.cameraY = map.height() / 2.0;
@@ -215,16 +217,26 @@ public final class PlanetMapViewer {
                 null);
         }
 
-        private static BufferedImage loadImage(String relativePath) {
-            Path path = Path.of(relativePath);
-            if (!Files.exists(path)) {
-                throw new IllegalStateException("Missing asset: " + path.toAbsolutePath());
-            }
+        private static BufferedImage loadImage(String assetRelativePath) {
+            Path path = resolveAssetPath(assetRelativePath);
             try {
                 return ImageIO.read(path.toFile());
             } catch (IOException e) {
                 throw new IllegalStateException("Failed to load asset " + path.toAbsolutePath(), e);
             }
+        }
+
+        private static Path resolveAssetPath(String assetRelativePath) {
+            List<Path> candidates = List.of(
+                Paths.get("assets", assetRelativePath),
+                Paths.get("PlanetInfo", "Java", "assets", assetRelativePath)
+            );
+            for (Path candidate : candidates) {
+                if (Files.exists(candidate)) {
+                    return candidate;
+                }
+            }
+            throw new IllegalStateException("Missing asset " + assetRelativePath + ". Tried: " + candidates);
         }
 
         private static int wrap(int value, int size) {
