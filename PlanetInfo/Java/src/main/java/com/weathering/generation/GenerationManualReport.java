@@ -25,6 +25,8 @@ public final class GenerationManualReport {
     private static final String GALAXY_MAP_KEY = "Weathering.MapOfGalaxy#=1,4";
     private static final String STAR_SYSTEM_MAP_KEY = "Weathering.MapOfStarSystem#=1,4=14,93";
     private static final String STAR_SYSTEM_SELF_INDEX = "#=1,4=14,93";
+    private static final int LANDING_X = 24;
+    private static final int LANDING_Y = 31;
 
     private GenerationManualReport() {}
 
@@ -60,16 +62,12 @@ public final class GenerationManualReport {
         System.out.printf("Profile: size=%d mineralDensity=%d baseAltitudeNoiseSize=%d baseMoistureNoiseSize=%d%n",
             profile.size(), profile.mineralDensity(), profile.baseAltitudeNoiseSize(), profile.baseMoistureNoiseSize());
 
-        System.out.printf("%nTerrain full map (%dx%d, letters: S=Sea P=Plain F=Forest M=Mountain)%n", map.width(), map.height());
-        printTerrainLetterGrid(map);
-        System.out.printf("%nTerrain cycled map around (0,0) (%dx%d)%n", map.width(), map.height());
-        printTerrainLetterGridCycled(map, 0, 0);
-        System.out.printf("%nANSI terrain+ore full map (%dx%d, ore overlays mountains)%n", map.width(), map.height());
+        System.out.printf("%nTerrain flipped view around landing (%d,%d) (%dx%d)%n", LANDING_X, LANDING_Y, map.width(), map.height());
+        printTerrainLetterGridFlippedAround(map, LANDING_X, LANDING_Y);
+        System.out.printf("%nANSI terrain+ore flipped view around landing (%d,%d) (%dx%d)%n", LANDING_X, LANDING_Y, map.width(), map.height());
         System.out.println("Plain=green, Forest=dark green, Mountain=light brown, Sea=aqua");
         System.out.println("Ore overlay on mountains: Coal=black Iron=silver Gold=gold Bauxite=taupe");
-        printTerrainAnsiGrid(map);
-        System.out.printf("%nANSI terrain+ore cycled map around (0,0) (%dx%d)%n", map.width(), map.height());
-        printTerrainAnsiGridCycled(map, 0, 0);
+        printTerrainAnsiGridFlippedAround(map, LANDING_X, LANDING_Y);
         System.out.println();
     }
 
@@ -86,14 +84,14 @@ public final class GenerationManualReport {
         }
     }
 
-    private static void printTerrainAnsiGridCycled(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
+    private static void printTerrainAnsiGridFlippedAround(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
         int xOrigin = centerX - map.width() / 2;
         int yOrigin = centerY - map.height() / 2;
         for (int y = 0; y < map.height(); y++) {
             StringBuilder row = new StringBuilder(map.width() * 20);
             for (int x = 0; x < map.width(); x++) {
-                int worldX = floorMod(xOrigin + x, map.width());
-                int worldY = floorMod(yOrigin + y, map.height());
+                int worldX = floorMod(xOrigin + (map.width() - 1 - x), map.width());
+                int worldY = floorMod(yOrigin + (map.height() - 1 - y), map.height());
                 var terrain = map.terrainTypes()[worldX][worldY];
                 var ore = map.oreTypes()[worldX][worldY];
                 row.append(renderAnsiCell(terrain, ore));
@@ -180,14 +178,14 @@ public final class GenerationManualReport {
         }
     }
 
-    private static void printTerrainLetterGridCycled(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
+    private static void printTerrainLetterGridFlippedAround(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
         int xOrigin = centerX - map.width() / 2;
         int yOrigin = centerY - map.height() / 2;
         for (int y = 0; y < map.height(); y++) {
             StringBuilder row = new StringBuilder(map.width());
             for (int x = 0; x < map.width(); x++) {
-                int worldX = floorMod(xOrigin + x, map.width());
-                int worldY = floorMod(yOrigin + y, map.height());
+                int worldX = floorMod(xOrigin + (map.width() - 1 - x), map.width());
+                int worldY = floorMod(yOrigin + (map.height() - 1 - y), map.height());
                 var terrain = map.terrainTypes()[worldX][worldY];
                 row.append(terrainToLetter(terrain));
             }
