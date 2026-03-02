@@ -82,6 +82,7 @@ ANSI terrain+ore grid legend:
 - `C` black = Coal ore (overlay on mountain)
 - `I` silver = Iron ore (overlay on mountain)
 - `G` gold = Gold ore (overlay on mountain)
+- `c` orange = Copper ore (overlay on mountain)
 - `B` taupe = Bauxite ore (overlay on mountain)
 
 

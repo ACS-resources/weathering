@@ -7,7 +7,7 @@ public final class PlanetGeneration {
     public enum MoistureType { MoistureDesert, MoistureGrassland, MoistureForest }
     public enum TemperatureType { TemporatureTemporate, TemporatureCold }
     public enum TerrainType { TerrainType_Sea, TerrainType_Plain, TerrainType_Forest, TerrainType_Mountain }
-    public enum OreType { Ore_Coal, Ore_Iron, Ore_Gold, Ore_Bauxite }
+    public enum OreType { Ore_Coal, Ore_Iron, Ore_Gold, Ore_Copper, Ore_Bauxite }
 
     public record PlanetProfile(int size, int mineralDensity, int baseAltitudeNoiseSize, int baseMoistureNoiseSize) {}
 
@@ -115,7 +115,7 @@ public final class PlanetGeneration {
             return OreType.Ore_Coal;
         }
         if (Hashing.hashed(hashRef) % 4 == 0) {
-            return OreType.Ore_Bauxite;
+            return OreType.Ore_Copper;
         }
         if (Hashing.hashed(hashRef) % 3 != 0) {
             return OreType.Ore_Iron;

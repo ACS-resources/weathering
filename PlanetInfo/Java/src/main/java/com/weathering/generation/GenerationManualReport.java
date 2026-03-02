@@ -15,6 +15,7 @@ public final class GenerationManualReport {
     private static final String ANSI_BG_COAL = "\u001B[48;5;16m";
     private static final String ANSI_BG_IRON = "\u001B[48;5;252m";
     private static final String ANSI_BG_GOLD = "\u001B[48;5;220m";
+    private static final String ANSI_BG_COPPER = "\u001B[48;5;208m";
     private static final String ANSI_BG_BAUXITE = "\u001B[48;5;137m";
 
     private static final String ANSI_FG_DARK = "\u001B[38;5;16m";
@@ -66,7 +67,7 @@ public final class GenerationManualReport {
         printTerrainLetterGridUpsideDownAround(map, LANDING_X, LANDING_Y);
         System.out.printf("%nANSI terrain+ore upside-down view around landing (%d,%d) (%dx%d)%n", LANDING_X, LANDING_Y, map.width(), map.height());
         System.out.println("Plain=green, Forest=dark green, Mountain=light brown, Sea=aqua");
-        System.out.println("Ore overlay on mountains: Coal=black Iron=silver Gold=gold Bauxite=taupe");
+        System.out.println("Ore overlay on mountains: Coal=black Iron=silver Gold=gold Copper=orange Bauxite=taupe");
         printTerrainAnsiGridUpsideDownAround(map, LANDING_X, LANDING_Y);
         System.out.println();
     }
@@ -109,6 +110,7 @@ public final class GenerationManualReport {
                 case Ore_Coal -> ANSI_BG_COAL + ANSI_FG_LIGHT + "C ";
                 case Ore_Iron -> ANSI_BG_IRON + ANSI_FG_DARK + "I ";
                 case Ore_Gold -> ANSI_BG_GOLD + ANSI_FG_DARK + "G ";
+                case Ore_Copper -> ANSI_BG_COPPER + ANSI_FG_DARK + "c ";
                 case Ore_Bauxite -> ANSI_BG_BAUXITE + ANSI_FG_LIGHT + "B ";
             };
         }
