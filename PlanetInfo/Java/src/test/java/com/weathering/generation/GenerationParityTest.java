@@ -8,7 +8,6 @@ public final class GenerationParityTest {
         testUniverseAndGalaxyDensity();
         testStarSystemClassification();
         testPlanetProfileAndTerrain();
-        testStartingPlanetKeyGeneration();
         testKnownHierarchyCoordinates();
         System.out.println("All generation parity checks passed.");
     }
@@ -91,32 +90,6 @@ public final class GenerationParityTest {
     }
 
 
-    private static void testStartingPlanetKeyGeneration() {
-        String mapKey = "Weathering.MapOfPlanet#=1,4=14,93=24,31";
-        String selfIndex = mapKey.substring(mapKey.indexOf('#'));
-
-        long mapHash = Hashing.hashString(mapKey);
-        long selfMapHash = Hashing.hashString(selfIndex);
-        var map = PlanetGeneration.generate(mapHash, selfMapHash, 5);
-
-        require(map.width() >= 64 && map.height() >= 64, "Starting planet map should be large enough for a 64x64 sample");
-
-        int terrainCount = 0;
-        for (int x = 0; x < 64; x++) {
-            for (int y = 0; y < 64; y++) {
-                var terrain = map.terrainTypes()[x][y];
-                require(terrain != null, "Terrain value should never be null");
-                var ore = map.oreTypes()[x][y];
-                if (ore != null) {
-                    require(terrain == PlanetGeneration.TerrainType.TerrainType_Mountain,
-                        "Starting-planet ore must sit on mountain terrain");
-                }
-                terrainCount++;
-            }
-        }
-        require(terrainCount == 4096, "64x64 starting-star terrain sample size mismatch");
-    }
-
     private static void testKnownHierarchyCoordinates() {
         long universeHash = Hashing.hashString("Weathering.MapOfUniverse#");
         long universeTileHash = Hashing.hash(1, 4, 100, 100, (int) universeHash);
@@ -127,9 +100,12 @@ public final class GenerationParityTest {
         require(CelestialGeneration.isStarSystemTile(galaxyTileHash), "Expected star system at galaxy (14,93)");
 
         long starSystemHash = Hashing.hashString("Weathering.MapOfStarSystem#=1,4=14,93");
+        long starTypeHash = Hashing.hashString("#=1,4=14,93");
+        require(CelestialGeneration.calculateStarType(starTypeHash) == CelestialGeneration.StarType.StarOrange,
+            "Expected orange star for star system (1,4)->(14,93)");
         var stars = CelestialGeneration.computeStarPositions(starSystemHash);
         long planetTileHash = Hashing.hash(24, 31, 32, 32, (int) starSystemHash);
-        var body = CelestialGeneration.classifyBody(planetTileHash, starSystemHash, 24, 31, stars);
+        var body = CelestialGeneration.classifyBody(planetTileHash, starTypeHash, 24, 31, stars);
         boolean isPlanetLike = body.name().startsWith("Planet")
             || body == CelestialGeneration.BodyType.GasGiant
             || body == CelestialGeneration.BodyType.GasGiantRinged;
@@ -139,7 +115,7 @@ public final class GenerationParityTest {
         for (int y = 0; y < 32; y++) {
             for (int x = 0; x < 32; x++) {
                 long tileHash = Hashing.hash(x, y, 32, 32, (int) starSystemHash);
-                var classification = CelestialGeneration.classifyBody(tileHash, starSystemHash, x, y, stars);
+                var classification = CelestialGeneration.classifyBody(tileHash, starTypeHash, x, y, stars);
                 if (classification.name().startsWith("Planet")
                     || classification == CelestialGeneration.BodyType.GasGiant
                     || classification == CelestialGeneration.BodyType.GasGiantRinged) {

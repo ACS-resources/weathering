@@ -24,6 +24,7 @@ public final class GenerationManualReport {
     private static final String UNIVERSE_MAP_KEY = "Weathering.MapOfUniverse#";
     private static final String GALAXY_MAP_KEY = "Weathering.MapOfGalaxy#=1,4";
     private static final String STAR_SYSTEM_MAP_KEY = "Weathering.MapOfStarSystem#=1,4=14,93";
+    private static final String STAR_SYSTEM_SELF_INDEX = "#=1,4=14,93";
 
     private GenerationManualReport() {}
 
@@ -37,7 +38,9 @@ public final class GenerationManualReport {
         printKnownHierarchyCheck();
         printUniverseReport(universeMapHash);
         printGalaxyReport(galaxyMapHash);
-        printStarSystemReport(starSystemMapHash);
+        long starSystemTypeHash = Hashing.hashString(STAR_SYSTEM_SELF_INDEX);
+
+        printStarSystemReport(starSystemMapHash, starSystemTypeHash);
         printPlanetReport(planetMapHash, planetSelfMapHash);
         printStartingStarPlanetReport(STARTING_PLANET_MAP_KEY);
     }
@@ -59,10 +62,14 @@ public final class GenerationManualReport {
 
         System.out.printf("%nTerrain full map (%dx%d, letters: S=Sea P=Plain F=Forest M=Mountain)%n", map.width(), map.height());
         printTerrainLetterGrid(map);
+        System.out.printf("%nTerrain cycled map around (0,0) (%dx%d)%n", map.width(), map.height());
+        printTerrainLetterGridCycled(map, 0, 0);
         System.out.printf("%nANSI terrain+ore full map (%dx%d, ore overlays mountains)%n", map.width(), map.height());
         System.out.println("Plain=green, Forest=dark green, Mountain=light brown, Sea=aqua");
         System.out.println("Ore overlay on mountains: Coal=black Iron=silver Gold=gold Bauxite=taupe");
         printTerrainAnsiGrid(map);
+        System.out.printf("%nANSI terrain+ore cycled map around (0,0) (%dx%d)%n", map.width(), map.height());
+        printTerrainAnsiGridCycled(map, 0, 0);
         System.out.println();
     }
 
@@ -72,6 +79,23 @@ public final class GenerationManualReport {
             for (int x = 0; x < map.width(); x++) {
                 var terrain = map.terrainTypes()[x][y];
                 var ore = map.oreTypes()[x][y];
+                row.append(renderAnsiCell(terrain, ore));
+            }
+            row.append(ANSI_RESET);
+            System.out.println(row);
+        }
+    }
+
+    private static void printTerrainAnsiGridCycled(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
+        int xOrigin = centerX - map.width() / 2;
+        int yOrigin = centerY - map.height() / 2;
+        for (int y = 0; y < map.height(); y++) {
+            StringBuilder row = new StringBuilder(map.width() * 20);
+            for (int x = 0; x < map.width(); x++) {
+                int worldX = floorMod(xOrigin + x, map.width());
+                int worldY = floorMod(yOrigin + y, map.height());
+                var terrain = map.terrainTypes()[worldX][worldY];
+                var ore = map.oreTypes()[worldX][worldY];
                 row.append(renderAnsiCell(terrain, ore));
             }
             row.append(ANSI_RESET);
@@ -108,9 +132,10 @@ public final class GenerationManualReport {
         long universeTileHash = Hashing.hash(1, 4, 100, 100, (int) universeHash);
         long galaxyTileHash = Hashing.hash(14, 93, 100, 100, (int) galaxyHash);
 
+        long starSystemTypeHash = Hashing.hashString(STAR_SYSTEM_SELF_INDEX);
         var stars = CelestialGeneration.computeStarPositions(starSystemHash);
         long planetTileHash = Hashing.hash(24, 31, 32, 32, (int) starSystemHash);
-        var body = CelestialGeneration.classifyBody(planetTileHash, starSystemHash, 24, 31, stars);
+        var body = CelestialGeneration.classifyBody(planetTileHash, starSystemTypeHash, 24, 31, stars);
         boolean isPlanetLike = body.name().startsWith("Planet") || body == CelestialGeneration.BodyType.GasGiant || body == CelestialGeneration.BodyType.GasGiantRinged;
 
         int starTiles = 0;
@@ -118,7 +143,7 @@ public final class GenerationManualReport {
         for (int y = 0; y < 32; y++) {
             for (int x = 0; x < 32; x++) {
                 long tileHash = Hashing.hash(x, y, 32, 32, (int) starSystemHash);
-                var classification = CelestialGeneration.classifyBody(tileHash, starSystemHash, x, y, stars);
+                var classification = CelestialGeneration.classifyBody(tileHash, starSystemTypeHash, x, y, stars);
                 if (classification.name().startsWith("Star")) starTiles++;
                 if (classification.name().startsWith("Planet")
                     || classification == CelestialGeneration.BodyType.GasGiant
@@ -134,7 +159,7 @@ public final class GenerationManualReport {
         System.out.printf("Galaxy tile (14,93) in %s -> planetSystem=%s (tileHash=%d)%n", galaxyMapKey,
             CelestialGeneration.isStarSystemTile(galaxyTileHash), galaxyTileHash);
         System.out.printf("Body tile (24,31) in %s -> %s (planetLike=%s)%n", planetSystemMapKey, body, isPlanetLike);
-        System.out.printf("Star-system totals in %s -> stars=%d planetLikeBodies=%d%n", planetSystemMapKey, starTiles, planetLikeBodies);
+        System.out.printf("Star-system totals in %s -> stars=%d planetLikeBodies=%d starType=%s%n", planetSystemMapKey, starTiles, planetLikeBodies, CelestialGeneration.calculateStarType(starSystemTypeHash));
 
         long planetMapHash = Hashing.hashString(planetMapKey);
         long planetSelfMapHash = Hashing.hashString(selfMapKeyIndex(planetMapKey));
@@ -153,6 +178,26 @@ public final class GenerationManualReport {
             }
             System.out.println(row);
         }
+    }
+
+    private static void printTerrainLetterGridCycled(PlanetGeneration.PlanetMap map, int centerX, int centerY) {
+        int xOrigin = centerX - map.width() / 2;
+        int yOrigin = centerY - map.height() / 2;
+        for (int y = 0; y < map.height(); y++) {
+            StringBuilder row = new StringBuilder(map.width());
+            for (int x = 0; x < map.width(); x++) {
+                int worldX = floorMod(xOrigin + x, map.width());
+                int worldY = floorMod(yOrigin + y, map.height());
+                var terrain = map.terrainTypes()[worldX][worldY];
+                row.append(terrainToLetter(terrain));
+            }
+            System.out.println(row);
+        }
+    }
+
+    private static int floorMod(int value, int modulus) {
+        int result = value % modulus;
+        return result < 0 ? result + modulus : result;
     }
 
     private static char terrainToLetter(PlanetGeneration.TerrainType terrain) {
@@ -222,7 +267,7 @@ public final class GenerationManualReport {
         System.out.printf("Star-system tiles in map=%d / %d%n%n", starSystemCount, width * height);
     }
 
-    private static void printStarSystemReport(long mapHash) {
+    private static void printStarSystemReport(long mapHash, long starTypeHash) {
         final int width = 32;
         final int height = 32;
 
@@ -238,7 +283,7 @@ public final class GenerationManualReport {
         for (int i = 0; i < width; i++) {
             for (int j = 0; j < height; j++) {
                 long tileHash = Hashing.hash(i, j, width, height, (int) mapHash);
-                var body = CelestialGeneration.classifyBody(tileHash, mapHash, i, j, stars);
+                var body = CelestialGeneration.classifyBody(tileHash, starTypeHash, i, j, stars);
                 histogram.put(body, histogram.getOrDefault(body, 0) + 1);
             }
         }
