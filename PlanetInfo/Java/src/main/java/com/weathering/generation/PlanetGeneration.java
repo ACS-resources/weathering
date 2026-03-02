@@ -86,6 +86,13 @@ public final class PlanetGeneration {
                 n = (n + 1) / 2f;
                 float latitude = (float) Math.sin(Math.PI * j / width);
                 float f = lerp(n, latitude, 0f);
+
+                int altitude = altitudes[i][j];
+                if (altitude > 0) {
+                    float t = 0.02f * altitude / 9500f;
+                    f = lerp(f, -20f, t);
+                }
+
                 int temperature = -20 + (int) (f * (40 - (-20)));
                 temperatures[i][j] = temperature;
                 temperatureTypes[i][j] = getTemperatureType(temperature);
