@@ -65,7 +65,7 @@ This prints human-checkable reports for:
 - planet profile + attribute ranges + terrain histogram + sample cells,
 - starting-star planet key `Weathering.MapOfPlanet#=1,4=14,93=24,31` with an upside-down landing-centered terrain view around the original landing position `(4,83)`,
 - ANSI-colored terrain+ore upside-down landing-centered grid for visual verification,
-- chessboard-style coordinate indices on top (letters) and left (world y values) for manual tile lookup,
+- compressed coordinate indices for manual tile lookup: top uses `hex*10+dec` (e.g. `A0` => 100, `B6` => 116) and left uses world y values,
 - star-system body totals for the known chain (`(1,4)->(14,93)`) including expected `planetLikeBodies=16` and `StarOrange`.
 
 Terrain letters:

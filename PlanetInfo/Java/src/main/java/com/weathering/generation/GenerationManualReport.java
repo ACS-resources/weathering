@@ -174,7 +174,7 @@ public final class GenerationManualReport {
             StringBuilder row = new StringBuilder(map.width());
             for (int x = 0; x < map.width(); x++) {
                 var terrain = map.terrainTypes()[x][y];
-                row.append(terrainToLetter(terrain));
+                row.append(terrainToLetter(terrain)).append(" ");
             }
             System.out.println(row);
         }
@@ -186,12 +186,12 @@ public final class GenerationManualReport {
         printTopAxis(xOrigin, map.width());
         for (int y = 0; y < map.height(); y++) {
             int worldY = floorMod(yOrigin + (map.height() - 1 - y), map.height());
-            StringBuilder row = new StringBuilder(map.width() + 8);
+            StringBuilder row = new StringBuilder(map.width() * 2 + 8);
             row.append(String.format("%3d ", worldY));
             for (int x = 0; x < map.width(); x++) {
                 int worldX = floorMod(xOrigin + x, map.width());
                 var terrain = map.terrainTypes()[worldX][worldY];
-                row.append(terrainToLetter(terrain));
+                row.append(terrainToLetter(terrain)).append(" ");
             }
             System.out.println(row);
         }
@@ -199,23 +199,19 @@ public final class GenerationManualReport {
 
 
     private static void printTopAxis(int xOrigin, int width) {
-        StringBuilder header = new StringBuilder(width + 8);
+        StringBuilder header = new StringBuilder(width * 2 + 8);
         header.append("    ");
         for (int x = 0; x < width; x++) {
             int worldX = floorMod(xOrigin + x, width);
-            header.append(columnLabel(worldX).charAt(0));
+            header.append(compressedCoord(worldX));
         }
         System.out.println(header);
     }
 
-    private static String columnLabel(int index) {
-        int n = index;
-        StringBuilder sb = new StringBuilder();
-        do {
-            sb.insert(0, (char) ('A' + (n % 26)));
-            n = n / 26 - 1;
-        } while (n >= 0);
-        return sb.toString();
+    private static String compressedCoord(int index) {
+        int high = index / 10;
+        int low = index % 10;
+        return String.format("%X%d", high, low);
     }
 
     private static int floorMod(int value, int modulus) {

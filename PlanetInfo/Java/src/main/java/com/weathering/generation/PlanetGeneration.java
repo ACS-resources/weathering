@@ -114,6 +114,9 @@ public final class PlanetGeneration {
         if (Hashing.hashed(hashRef) % 2 == 0) {
             return OreType.Ore_Coal;
         }
+        if (Hashing.hashed(hashRef) % 4 == 0) {
+            return OreType.Ore_Bauxite;
+        }
         if (Hashing.hashed(hashRef) % 3 != 0) {
             return OreType.Ore_Iron;
         }
