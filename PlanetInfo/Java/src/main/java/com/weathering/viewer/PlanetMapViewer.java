@@ -104,8 +104,8 @@ public final class PlanetMapViewer {
             if (pressedKeys.contains(KeyEvent.VK_A)) cameraX -= speed;
             if (pressedKeys.contains(KeyEvent.VK_D)) cameraX += speed;
 
-            cameraX = clamp(cameraX, 0, map.width() - 1);
-            cameraY = clamp(cameraY, 0, map.height() - 1);
+            cameraX = wrapDouble(cameraX, map.width());
+            cameraY = wrapDouble(cameraY, map.height());
         }
 
         @Override
@@ -190,21 +190,118 @@ public final class PlanetMapViewer {
             boolean downLeft = predicate.matches(map.terrainTypes()[wrap(x - 1, map.width())][wrap(y - 1, map.height())]);
             boolean downRight = predicate.matches(map.terrainTypes()[wrap(x + 1, map.width())][wrap(y - 1, map.height())]);
 
-            if (left && right && up && down && upLeft && upRight && downLeft && downRight) return 9;
-            if (left && right && up && down) return 12;
-            if (left && right && up) return 17;
-            if (left && right && down) return 1;
-            if (left && right) return 45;
-            if (up && down && left) return 10;
-            if (up && down && right) return 8;
-            if (up && down) return 11;
-            if (left && up) return 18;
-            if (right && up) return 16;
-            if (left && down) return 2;
-            if (right && down) return 0;
-            if (left || right) return 44;
-            if (up || down) return 15;
-            return 13;
+            return calculate6x8RuleTileIndex(left, right, up, down, upLeft, upRight, downLeft, downRight);
+        }
+
+        private static int calculate6x8RuleTileIndex(boolean left, boolean right,
+                                                     boolean up, boolean down, boolean upLeft, boolean upRight,
+                                                     boolean downLeft, boolean downRight) {
+            if (left) {
+                if (right) {
+                    if (up) {
+                        if (down) {
+                            if (upLeft && upRight && downLeft && downRight) return 1 * 8 + 1;
+
+                            if (!upLeft && upRight && downLeft && downRight) return 5 * 8 + 2;
+                            if (upLeft && !upRight && downLeft && downRight) return 5 * 8;
+                            if (upLeft && upRight && !downLeft && downRight) return 3 * 8 + 2;
+                            if (upLeft && upRight && downLeft && !downRight) return 3 * 8;
+
+                            if (upLeft && upRight && !downLeft && !downRight) return 3 * 8 + 1;
+                            if (upLeft && !upRight && downLeft && !downRight) return 4 * 8;
+                            if (upLeft && !upRight && !downLeft && downRight) return 7;
+                            if (!upLeft && upRight && downLeft && !downRight) return 6;
+                            if (!upLeft && upRight && !downLeft && downRight) return 4 * 8 + 2;
+                            if (!upLeft && !upRight && downLeft && downRight) return 5 * 8 + 1;
+
+                            if (upLeft && !upRight && !downLeft && !downRight) return 2 * 8 + 7;
+                            if (!upLeft && upRight && !downLeft && !downRight) return 2 * 8 + 6;
+                            if (!upLeft && !upRight && downLeft && !downRight) return 1 * 8 + 7;
+                            if (!upLeft && !upRight && !downLeft && downRight) return 1 * 8 + 6;
+
+                            if (!upLeft && !upRight && !downLeft && !downRight) return 1 * 8 + 4;
+
+                            throw new IllegalStateException();
+                        } else {
+                            if (upLeft && upRight) return 2 * 8 + 1;
+                            if (!upLeft && upRight) return 4 * 8 + 6;
+                            if (upLeft && !upRight) return 4 * 8 + 7;
+                            if (!upLeft && !upRight) return 2 * 8 + 4;
+
+                            throw new IllegalStateException();
+                        }
+                    } else {
+                        if (down) {
+                            if (downLeft && downRight) return 1;
+                            if (!downLeft && downRight) return 3 * 8 + 6;
+                            if (downLeft && !downRight) return 3 * 8 + 7;
+                            if (!downLeft && !downRight) return 4;
+
+                        } else {
+                            return 5 * 8 + 5;
+                        }
+                    }
+                } else {
+                    if (up) {
+                        if (down) {
+                            if (upLeft && downLeft) return 1 * 8 + 2;
+                            if (!upLeft && downLeft) return 3 * 8 + 5;
+                            if (upLeft && !downLeft) return 4 * 8 + 5;
+                            if (!upLeft && !downLeft) return 1 * 8 + 5;
+
+                            throw new IllegalStateException();
+                        } else {
+                            if (upLeft) return 2 * 8 + 2;
+                            return 2 * 8 + 5;
+                        }
+                    } else {
+                        if (down) {
+                            if (downLeft) return 2;
+                            return 5;
+                        } else {
+                            return 5 * 8 + 6;
+                        }
+                    }
+                }
+            } else {
+                if (right) {
+                    if (up) {
+                        if (down) {
+                            if (upRight && downRight) return 1 * 8;
+                            if (!upRight && downRight) return 3 * 8 + 4;
+                            if (upRight && !downRight) return 4 * 8 + 4;
+                            if (!upRight && !downRight) return 1 * 8 + 3;
+
+                            throw new IllegalStateException();
+                        } else {
+                            if (upRight) return 2 * 8;
+                            return 2 * 8 + 3;
+                        }
+                    } else {
+                        if (down) {
+                            if (downRight) return 0;
+                            return 3;
+                        } else {
+                            return 5 * 8 + 4;
+                        }
+                    }
+                } else {
+                    if (up) {
+                        if (down) {
+                            return 4 * 8 + 3;
+                        } else {
+                            return 5 * 8 + 3;
+                        }
+                    } else {
+                        if (down) {
+                            return 3 * 8 + 3;
+                        } else {
+                            return 5 * 8 + 7;
+                        }
+                    }
+                }
+            }
+            return 4 * 8 + 1;
         }
 
         private static void drawFromSheet(Graphics2D g2, BufferedImage sheet, int index, int cols, int x, int y) {
@@ -244,8 +341,9 @@ public final class PlanetMapViewer {
             return result < 0 ? result + size : result;
         }
 
-        private static double clamp(double value, double min, double max) {
-            return Math.max(min, Math.min(max, value));
+        private static double wrapDouble(double value, int size) {
+            double wrapped = value % size;
+            return wrapped < 0 ? wrapped + size : wrapped;
         }
 
         @FunctionalInterface
