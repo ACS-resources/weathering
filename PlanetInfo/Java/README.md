@@ -90,7 +90,7 @@ Parity note: hierarchy checks are kept strict, while the starting planet terrain
 
 ## Run map viewer (Swing UI, WASD camera)
 
-This viewer renders the primary planet (`Weathering.MapOfPlanet#=1,4=14,93=24,31`) at the original 16x16 tile scale, with terrain edge textures (4x4 grass rule tile and mountain sheet selection), and supports camera movement with **W/A/S/D**. It resolves assets when launched from either the repository root or `PlanetInfo/Java` directory.
+This viewer renders the primary planet (`Weathering.MapOfPlanet#=1,4=14,93=24,31`) at the original 16x16 tile scale, with terrain edge textures (4x4 grass rule tile + full original 6x8 mountain rule mapping), mountain ores rendered on top, and supports camera movement with **W/A/S/D** (cycling/wraparound). It resolves assets when launched from either the repository root or `PlanetInfo/Java` directory.
 
 ```powershell
 cd PlanetInfo/Java

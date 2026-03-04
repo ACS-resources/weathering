@@ -39,7 +39,7 @@ public final class PlanetMapViewer {
 
             JFrame frame = new JFrame("Weathering Primary Planet (Java)");
             frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-            frame.setContentPane(new PlanetMapPanel(map));
+            frame.setContentPane(new PlanetMapPanel(map, primaryPlanetHash));
             frame.pack();
             frame.setLocationRelativeTo(null);
             frame.setVisible(true);
@@ -48,24 +48,36 @@ public final class PlanetMapViewer {
 
     private static final class PlanetMapPanel extends JPanel {
         private final PlanetGeneration.PlanetMap map;
+        private final int mapHashCode;
         private final BufferedImage grassSheet;
         private final BufferedImage hillSheet;
         private final BufferedImage waterSurface;
         private final BufferedImage waterWave;
         private final BufferedImage tree;
+        private final BufferedImage oreCoal;
+        private final BufferedImage oreIron;
+        private final BufferedImage oreGold;
+        private final BufferedImage oreCopper;
+        private final BufferedImage oreBauxite;
 
         private double cameraX;
         private double cameraY;
         private final Set<Integer> pressedKeys = new HashSet<>();
         private long lastTickNanos = System.nanoTime();
 
-        PlanetMapPanel(PlanetGeneration.PlanetMap map) {
+        PlanetMapPanel(PlanetGeneration.PlanetMap map, long mapHashCode) {
             this.map = map;
+            this.mapHashCode = (int) mapHashCode;
             this.grassSheet = loadImage("tiles/Planets/Continental/PlanetContinental_Grass.png");
             this.hillSheet = loadImage("tiles/Planets/Continental/PlanetContinental_Hill.png");
             this.waterSurface = loadImage("tiles/Planets/Continental/PlanetContinental_WaterSurface.png");
             this.waterWave = loadImage("tiles/Planets/Continental/PlanetContinental_WaterWave.png");
             this.tree = loadImage("tiles/Planets/Continental/PlanetContinental_Tree.png");
+            this.oreCoal = loadImage("tiles/Items/Coal.png");
+            this.oreIron = loadImage("tiles/Items/IronOre.png");
+            this.oreGold = loadImage("tiles/Items/GoldOre.png");
+            this.oreCopper = loadImage("tiles/Items/CopperOre.png");
+            this.oreBauxite = loadImage("tiles/Items/AluminumOre.png");
 
             this.cameraX = map.width() / 2.0;
             this.cameraY = map.height() / 2.0;
@@ -143,7 +155,7 @@ public final class PlanetMapViewer {
 
             int grassIndex = calculate4x4RuleTileIndex(x, y, t -> t != PlanetGeneration.TerrainType.TerrainType_Sea);
             if (grassIndex == 5) {
-                long tileHash = Hashing.hash(x, y, map.width(), map.height(), 0x5EED1234);
+                long tileHash = Hashing.hash(x, y, map.width(), map.height(), mapHashCode);
                 grassIndex = 16 + (int) (tileHash % 16);
             }
             drawFromSheet(g2, grassSheet, grassIndex, 4, drawX, drawY);
@@ -156,6 +168,11 @@ public final class PlanetMapViewer {
             } else if (terrain == PlanetGeneration.TerrainType.TerrainType_Mountain) {
                 int hillIndex = calculate6x8RuleTileIndex(x, y, t -> t == PlanetGeneration.TerrainType.TerrainType_Mountain);
                 drawFromSheet(g2, hillSheet, hillIndex, 8, drawX, drawY);
+
+                var oreType = map.oreTypes()[x][y];
+                if (oreType != null) {
+                    g2.drawImage(selectOreSprite(oreType), drawX, drawY, null);
+                }
             }
         }
 
@@ -302,6 +319,17 @@ public final class PlanetMapViewer {
                 }
             }
             return 4 * 8 + 1;
+        }
+
+
+        private BufferedImage selectOreSprite(PlanetGeneration.OreType oreType) {
+            return switch (oreType) {
+                case Ore_Coal -> oreCoal;
+                case Ore_Iron -> oreIron;
+                case Ore_Gold -> oreGold;
+                case Ore_Copper -> oreCopper;
+                case Ore_Bauxite -> oreBauxite;
+            };
         }
 
         private static void drawFromSheet(Graphics2D g2, BufferedImage sheet, int index, int cols, int x, int y) {
