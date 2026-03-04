@@ -87,3 +87,24 @@ ANSI terrain+ore grid legend:
 
 
 Parity note: hierarchy checks are kept strict, while the starting planet terrain remains governed by the general terrain algorithm (no hardcoded shape assertions).
+
+## Run map viewer (Swing UI, WASD camera)
+
+This viewer renders the primary planet (`Weathering.MapOfPlanet#=1,4=14,93=24,31`) at the original 16x16 tile scale, with terrain edge textures (4x4 grass rule tile + full original 6x8 mountain rule mapping), mountain ores rendered on top, and supports camera movement with **W/A/S/D** (cycling/wraparound). It resolves assets when launched from either the repository root or `PlanetInfo/Java` directory.
+
+```powershell
+cd PlanetInfo/Java
+if (!(Test-Path out)) { New-Item -ItemType Directory -Path out | Out-Null }
+$files = Get-ChildItem -Recurse src/main/java,src/test/java -Filter *.java | ForEach-Object { $_.FullName }
+javac -encoding UTF-8 -d out $files
+java -cp out com.weathering.viewer.PlanetMapViewer
+```
+
+```cmd
+cd PlanetInfo\Java
+if not exist out mkdir out
+for /r src %f in (*.java) do @echo %f>> sources.txt
+javac -encoding UTF-8 -d out @sources.txt
+java -cp out com.weathering.viewer.PlanetMapViewer
+del sources.txt
+```
